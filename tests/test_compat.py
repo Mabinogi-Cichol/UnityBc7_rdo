@@ -428,6 +428,22 @@ def main():
     finally:
         cfg_path.unlink(missing_ok=True)
 
+    # 6. BC7_RDO_CONFIG 环境变量指向项目内配置文件
+    cfg_env_path = WRAPPER_DLL.parent / "bc7_rdo_config_env.txt"
+    cfg_env_path.write_text("lambda=1.5\nlookback=256\n", encoding="utf-8")
+    try:
+        os.environ["BC7_RDO_CONFIG"] = str(cfg_env_path)
+        out_cfg_env = wrap.compress_bytes(pixels, num_blocks, params)
+        os.environ.pop("BC7_RDO_CONFIG", None)
+        results["config_env_file"] = {
+            "file": str(cfg_env_path),
+            "zlib9_bytes": zlib_size(out_cfg_env),
+            "differs_from_baseline": out_cfg_env != baseline,
+        }
+    finally:
+        os.environ.pop("BC7_RDO_CONFIG", None)
+        cfg_env_path.unlink(missing_ok=True)
+
     # 输出
     REPORT.parent.mkdir(parents=True, exist_ok=True)
     REPORT.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -455,6 +471,7 @@ def main():
               f"changed={v['blocks_changed_pct']}%")
 
     print(f"\n配置文件侧信道: {results['config_file']}")
+    print(f"BC7_RDO_CONFIG 环境变量侧信道: {results['config_env_file']}")
     print(f"\n报告已写入: {REPORT}")
 
     if failed:

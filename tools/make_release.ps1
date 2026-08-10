@@ -21,6 +21,7 @@ Copy-Item -LiteralPath (Join-Path $out "exports.txt") -Destination $releaseDir -
 # 配置示例
 $configExample = @"
 # bc7_rdo_config.txt 示例：与本 DLL 放在同一目录
+# 也可用环境变量 BC7_RDO_CONFIG 指定任意路径的配置文件（优先级高于同目录文件）
 # 环境变量优先级高于本文件（BC7_RDO_LAMBDA / BC7_RDO_LOOKBACK / ...）
 lambda=1.0
 lookback=128
@@ -41,7 +42,8 @@ compress_bc7e_rdo $Version - Unity BC7 RDO shell DLL (win-x64)
 - compress_bc7e.dll          壳 DLL（导出与 Unity 原 DLL 一致）
 - compress_bc7e_original.dll Unity 原 DLL 的项目内副本（转发目标；Unity 专有二进制，
                               仅限本地使用，禁止公开分发）
-- bc7_rdo_config.txt.example RDO 配置文件示例（复制为 bc7_rdo_config.txt 使用）
+- bc7_rdo_config.txt.example RDO 配置文件示例（复制为 bc7_rdo_config.txt 使用；
+                              也可用环境变量 BC7_RDO_CONFIG 指向任意路径的配置）
 - exports.txt                导出表
 
 使用方法
@@ -50,7 +52,7 @@ compress_bc7e_rdo $Version - Unity BC7 RDO shell DLL (win-x64)
    或设置环境变量 BC7E_ORIGINAL_DLL 指向原 DLL 副本。
 2. 默认行为：转发到原 DLL，输出逐字节一致（RDO 关闭）。
 3. 开启 RDO：设置 BC7_RDO_LAMBDA > 0（建议 0.25 ~ 4.0），或在本目录放置
-   bc7_rdo_config.txt（内容见示例）。
+   bc7_rdo_config.txt（内容见示例）；配置文件也可用 BC7_RDO_CONFIG 指向其他路径。
 
 侧信道参数（环境变量优先）
 --------------------------

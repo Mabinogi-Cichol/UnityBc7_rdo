@@ -105,6 +105,18 @@ two_matches=1
 
 配置文件修改后会被自动重读。
 
+也可以把配置文件放在项目里，用环境变量 `BC7_RDO_CONFIG` 指向它：
+
+```powershell
+[Environment]::SetEnvironmentVariable(
+    'BC7_RDO_CONFIG',
+    'D:\ProjectFiles\Git\UnityBc7_rdo\bc7_rdo_config.txt',
+    'User')
+```
+
+这样 Unity 安装目录里除了被替换的 DLL 外不需要放任何额外文件（详见
+[docs/USING_WITH_UNITY.md](docs/USING_WITH_UNITY.md)）。
+
 ## 实测结果（photo 256×256，basic，perceptual）
 
 | λ | zlib9 体积 | 相比基线 | PSNR | 改变块比例 |

@@ -161,11 +161,22 @@ struct rdo_config
     bool debug = false;
 };
 
-rdo_config parse_config_file()
+std::wstring get_config_path()
+{
+    // 优先使用 BC7_RDO_CONFIG 指向的项目内配置文件
+    wchar_t env_path[MAX_PATH * 4] = {};
+    DWORD env_len = GetEnvironmentVariableW(L"BC7_RDO_CONFIG", env_path,
+                                             (DWORD)_countof(env_path));
+    if (env_len && env_len < _countof(env_path))
+        return env_path;
+
+    // 默认与本 DLL 同目录
+    return get_module_directory() + L"\\bc7_rdo_config.txt";
+}
+
+rdo_config parse_config_file(const std::wstring& path)
 {
     rdo_config c;
-    std::wstring dir = get_module_directory();
-    std::wstring path = dir + L"\\bc7_rdo_config.txt";
 
     FILE* f = _wfopen(path.c_str(), L"r");
     if (!f)
@@ -200,9 +211,15 @@ const rdo_config& config()
     static rdo_config cached;
     static FILETIME cached_time = {};
     static bool first = true;
+    static std::wstring cached_path;
 
-    std::wstring dir = get_module_directory();
-    std::wstring path = dir + L"\\bc7_rdo_config.txt";
+    std::wstring path = get_config_path();
+    if (path != cached_path)
+    {
+        first = true;
+        cached_time = FILETIME{};
+        cached_path = path;
+    }
     WIN32_FILE_ATTRIBUTE_DATA fad = {};
     BOOL exists = GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad);
 
@@ -218,7 +235,7 @@ const rdo_config& config()
 
     if (first || CompareFileTime(&fad.ftLastWriteTime, &cached_time) != 0)
     {
-        cached = parse_config_file();
+        cached = parse_config_file(path);
         cached_time = fad.ftLastWriteTime;
         first = false;
     }
