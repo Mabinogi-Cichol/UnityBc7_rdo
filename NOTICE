@@ -1,0 +1,13 @@
+This repository contains a reverse-engineered compatibility layer for Unity's
+compress_bc7e.dll. The original DLL is copied (not modified) for analysis and
+forwarding inside the project.
+
+Third-party components:
+- bc7enc_rdo (ert.cpp, bc7decomp.cpp, utils.h): MIT license / public domain,
+  see vendor/bc7enc_rdo/LICENSE.
+- bc7e.ispc is included inside vendor/bc7enc_rdo for interface reference only
+  and is not compiled into the shell DLL. The upstream BinomialLLC/bc7e
+  release is Apache-2.0; the copy inside bc7enc_rdo follows that repo's
+  MIT/public-domain LICENSE.
+
+The shell DLL does not modify any file inside the Unity installation directory.

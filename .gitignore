@@ -1,0 +1,9 @@
+out/
+__pycache__/
+*.pyc
+*.obj
+*.lib
+*.exp
+vendor/**/ispc.exe
+# Unity 专有二进制：不纳入版本库，构建脚本会从 Unity 安装目录恢复
+vendor/compress_bc7e_original.dll
