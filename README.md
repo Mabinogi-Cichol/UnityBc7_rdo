@@ -31,6 +31,8 @@ out/                            # 构建产物与测试报告（git 忽略）
 powershell -ExecutionPolicy Bypass -File tools\build.ps1
 ```
 
+详细的前置要求、原理、常见问题见 [docs/BUILD.md](docs/BUILD.md)。
+
 产物：
 
 - `out/compress_bc7e.dll` —— 壳 DLL（导出与原 DLL 一致 + 1 个调试导出）
@@ -41,6 +43,29 @@ powershell -ExecutionPolicy Bypass -File tools\build.ps1
 > 克隆/切换环境后运行 `tools/build.ps1` 会自动从
 > `C:\Program Files\Unity\Unity 2022.3.62f1\Editor\compress_bc7e.dll`
 > 恢复副本；也可用环境变量 `UNITY_BC7E_DLL` 指定其他路径。
+
+## 发布 Release
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\make_release.ps1 -Version v0.1.0
+```
+
+脚本先构建 DLL，再生成 `release\v0.1.0\` 目录与
+`release\compress_bc7e_rdo-v0.1.0-win-x64.zip` 压缩包（含 DLL、原 DLL 副本、
+配置示例、README、导出表与 SHA256SUMS）。
+
+打完包后可用 git 标签标记版本：
+
+```powershell
+git tag -a v0.1.0 -m "Unity BC7 RDO shell DLL v0.1.0"
+git push origin main --tags
+```
+
+若要发布到 GitHub Releases（本机无 `gh` CLI 时）：
+
+```powershell
+gh release create v0.1.0 release/compress_bc7e_rdo-v0.1.0-win-x64.zip
+```
 
 ## 测试
 
