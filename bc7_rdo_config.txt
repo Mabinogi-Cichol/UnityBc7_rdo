@@ -1,0 +1,6 @@
+﻿lambda=1
+lookback=128
+smooth_scale=15
+max_rms_increase_ratio=10
+two_matches=1
+debug=0

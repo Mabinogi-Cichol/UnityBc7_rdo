@@ -95,7 +95,7 @@ python tests\test_compat.py
    - `BC7_RDO_TWO_MATCHES`：默认 1
    - `BC7_RDO_DEBUG`：默认 0
    - `BC7E_ORIGINAL_DLL`：指定原 DLL 副本路径
-2. 配置文件：与本 DLL 同目录的 `bc7_rdo_config.txt`，例如：
+2. 配置文件：**与壳 DLL 同目录的 `bc7_rdo_config.txt`**（Unity 安装目录内），例如：
 
 ```text
 lambda=1.0
@@ -105,7 +105,21 @@ two_matches=1
 
 配置文件修改后会被自动重读。
 
-也可以把配置文件放在项目里，用环境变量 `BC7_RDO_CONFIG` 指向它：
+### 推荐：兜底文件方案（免环境变量）
+
+用 `tools\enable_unity_rdo.ps1`（选项 1 或 6），把原 DLL 副本 `compress_bc7e_original.dll`
+和配置文件 `bc7_rdo_config.txt` 一起装入 Unity 安装目录（壳 DLL 同目录）。
+壳 DLL 会优先在自身目录找到这两个文件，**完全不依赖环境变量**：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\enable_unity_rdo.ps1   # 菜单选 1 或 6
+```
+
+> ⚠️ 环境变量在进程启动时读取：如果只设置环境变量而不安装兜底文件，修改后
+> 必须**完全退出并重启 Unity** 才生效，否则壳 DLL 找不到原 DLL 会输出全零块
+> （纹理显示为全透明/黑图）。兜底文件方案没有这个问题。
+
+也可以把配置文件放在项目里，用环境变量 `BC7_RDO_CONFIG` 指向它（可选，优先级更高）：
 
 ```powershell
 [Environment]::SetEnvironmentVariable(
@@ -114,8 +128,7 @@ two_matches=1
     'User')
 ```
 
-这样 Unity 安装目录里除了被替换的 DLL 外不需要放任何额外文件（详见
-[docs/USING_WITH_UNITY.md](docs/USING_WITH_UNITY.md)）。
+详见 [docs/USING_WITH_UNITY.md](docs/USING_WITH_UNITY.md)。
 
 ## 实测结果（photo 256×256，basic，perceptual）
 

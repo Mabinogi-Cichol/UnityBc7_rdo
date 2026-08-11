@@ -11,6 +11,9 @@ $root       = Split-Path -Parent $PSScriptRoot
 $unityDll   = "C:\Program Files\Unity\Unity $UnityVersion\Editor\compress_bc7e.dll"
 $backupDll  = Join-Path $root "vendor\compress_bc7e_original.dll"
 $shellDll   = Join-Path $root "out\compress_bc7e.dll"
+$unityDir     = Split-Path -Parent $unityDll
+$fallbackOrig = Join-Path $unityDir "compress_bc7e_original.dll"
+$fallbackCfg  = Join-Path $unityDir "bc7_rdo_config.txt"
 if (-not $ConfigFile) {
     $ConfigFile = Join-Path $root "bc7_rdo_config.txt"
 }
@@ -84,8 +87,24 @@ function Show-Status {
         Write-Host "原 DLL 备份 : 缺失"
     }
     Write-Host "壳 DLL 产物 : $shellDll"
+
+    $fbOrigHash = Get-Sha256 $fallbackOrig
+    if ($fbOrigHash -and $fbOrigHash -eq $backupHash) {
+        Write-Host "Unity 兜底  : 原 DLL 副本已就位（$fallbackOrig）"
+    } elseif ($fbOrigHash) {
+        Write-Host "Unity 兜底  : 原 DLL 副本存在但内容与备份不一致！($fallbackOrig)"
+    } else {
+        Write-Host "Unity 兜底  : 原 DLL 副本缺失（$fallbackOrig）—— 壳 DLL 将依赖环境变量"
+    }
+    if (Test-Path -LiteralPath $fallbackCfg) {
+        Write-Host "Unity 配置  : 已就位（$fallbackCfg）"
+        Get-Content -LiteralPath $fallbackCfg | ForEach-Object { Write-Host "    $_" }
+    } else {
+        Write-Host "Unity 配置  : 缺失（$fallbackCfg）"
+    }
     Write-Host ""
 
+    Write-Host "环境变量（可选：兜底文件就位时无需设置）:"
     foreach ($name in @('BC7E_ORIGINAL_DLL', 'BC7_RDO_CONFIG', 'BC7_RDO_LAMBDA')) {
         $val = [Environment]::GetEnvironmentVariable($name, 'User')
         if ($val) {
@@ -176,6 +195,64 @@ function Copy-BackupToUnity {
     }
 }
 
+# 安装兜底文件：原 DLL 副本 + 配置文件放入 Unity 安装目录。
+# 壳 DLL 的查找顺序是 环境变量 -> 与自身同目录 -> 工作目录，
+# 因此只要这两个文件就位，就完全不依赖环境变量。
+function Install-FallbackFiles {
+    param([float]$LambdaValue = $Lambda)
+
+    $ok = $true
+    if (-not (Test-Path -LiteralPath $backupDll)) {
+        Write-Host "缺少原 DLL 副本：$backupDll（请先运行 tools\build.ps1 恢复）"
+        return $false
+    }
+    try {
+        Copy-Item -LiteralPath $backupDll -Destination $fallbackOrig -Force
+        Write-Host "原 DLL 副本 -> $fallbackOrig"
+    } catch {
+        Write-Host "复制原 DLL 副本失败: $($_.Exception.Message)"
+        $ok = $false
+    }
+
+    $lam = Read-Lambda $LambdaValue
+    $cfg = "lambda=$lam`nlookback=128`smooth_scale=15`nmax_rms_increase_ratio=10`ntwo_matches=1`ndebug=0"
+    try {
+        Set-Content -LiteralPath $fallbackCfg -Value $cfg -Encoding utf8
+        Write-Host "配置文件   -> $fallbackCfg（lambda=$lam）"
+    } catch {
+        Write-Host "写入配置文件失败: $($_.Exception.Message)"
+        $ok = $false
+    }
+    return $ok
+}
+
+function Remove-FallbackFiles {
+    foreach ($f in @($fallbackOrig, $fallbackCfg)) {
+        if (Test-Path -LiteralPath $f) {
+            try {
+                Remove-Item -LiteralPath $f -Force
+                Write-Host "已移除兜底文件: $f"
+            } catch {
+                Write-Host "移除兜底文件失败（请手动删除）: $f"
+            }
+        }
+    }
+}
+
+function Finish-Replace {
+    Write-Host "已替换 -> $unityDll"
+    if (Install-FallbackFiles) {
+        if ([Environment]::GetEnvironmentVariable('BC7E_ORIGINAL_DLL', 'User') -and
+            (Confirm-Question "兜底文件已就位，不再依赖环境变量。是否清除用户级环境变量（BC7E_ORIGINAL_DLL / BC7_RDO_CONFIG / BC7_RDO_LAMBDA）？")) {
+            foreach ($n in @('BC7E_ORIGINAL_DLL', 'BC7_RDO_CONFIG', 'BC7_RDO_LAMBDA')) {
+                [Environment]::SetEnvironmentVariable($n, $null, 'User')
+            }
+            Write-Host "已清除环境变量。"
+        }
+    }
+    Write-Host "完成。请完全退出并重启 Unity 后重新导入验证。"
+}
+
 function Show-AccessDeniedHints {
     Write-Host ""
     Write-Host "如果重试仍失败，请依次检查："
@@ -221,8 +298,7 @@ function Invoke-Replace {
     }
 
     if (Copy-ShellToUnity) {
-        Write-Host "已替换 -> $unityDll"
-        Write-Host "完成。请重启 Unity 验证。"
+        Finish-Replace
         return
     }
 
@@ -230,8 +306,7 @@ function Invoke-Replace {
     if (Confirm-Question "是否尝试修复文件权限后重试？") {
         if (Invoke-FixPermissions) {
             if (Copy-ShellToUnity) {
-                Write-Host "已替换 -> $unityDll"
-                Write-Host "完成。请重启 Unity 验证。"
+                Finish-Replace
                 return
             }
         }
@@ -257,7 +332,8 @@ function Invoke-SetEnv {
             Invoke-WriteConfig -LambdaValue $lam
         }
     }
-    Write-Host "完成。重启 Unity（或重新登录）后环境变量生效。"
+    Write-Host "完成。环境变量优先级高于文件，设置后需完全重启 Unity 才生效；"
+    Write-Host "也可以不设置——选项 1/6 会把兜底文件装入 Unity 目录（推荐，免环境变量）。"
 }
 
 function Invoke-WriteConfig {
@@ -307,6 +383,7 @@ function Invoke-Rollback {
 
     if (Copy-BackupToUnity) {
         Write-Host "已回滚 -> $unityDll"
+        Remove-FallbackFiles
         return
     }
 
@@ -315,6 +392,7 @@ function Invoke-Rollback {
         if (Invoke-FixPermissions) {
             if (Copy-BackupToUnity) {
                 Write-Host "已回滚 -> $unityDll"
+                Remove-FallbackFiles
                 return
             }
         }
@@ -322,14 +400,32 @@ function Invoke-Rollback {
     Show-AccessDeniedHints
 }
 
+function Invoke-InstallFallback {
+    Write-Host ""
+    Write-Host ">>> 安装兜底文件（原 DLL 副本 + 配置文件到 Unity 目录）<<<"
+    if (-not (Test-Admin)) {
+        Write-Host "需要管理员权限（写入 Unity 安装目录），请以管理员身份运行本脚本。"
+        return
+    }
+    if (Test-UnityRunning) {
+        Write-Host "检测到 Unity 正在运行，建议先关闭编辑器！"
+        if (-not (Confirm-Question "仍然继续？")) { return }
+    }
+    if (Install-FallbackFiles) {
+        Write-Host "完成。壳 DLL 会优先读取 Unity 目录下的原 DLL 副本与配置文件，不再依赖环境变量。"
+        Write-Host "请完全退出并重启 Unity 后重新导入验证。"
+    }
+}
+
 function Show-Menu {
     Write-Host ""
     Write-Host "===== Unity BC7 RDO 工具 ====="
-    Write-Host "  1) 替换 DLL（备份原 DLL + 装入壳 DLL，需管理员）"
-    Write-Host "  2) 设置环境变量（BC7E_ORIGINAL_DLL / BC7_RDO_CONFIG / BC7_RDO_LAMBDA）"
-    Write-Host "  3) 回滚 DLL（从备份恢复原 DLL，需管理员）"
+    Write-Host "  1) 替换 DLL（备份原 DLL + 装入壳 DLL + 安装兜底文件，需管理员）"
+    Write-Host "  2) 设置环境变量（可选：兜底文件就位时无需设置）"
+    Write-Host "  3) 回滚 DLL（从备份恢复原 DLL，移除兜底文件，需管理员）"
     Write-Host "  4) 生成/更新 bc7_rdo_config.txt"
     Write-Host "  5) 显示当前状态"
+    Write-Host "  6) 安装兜底文件（原 DLL 副本 + 配置到 Unity 目录，免环境变量，需管理员）"
     Write-Host "  0) 退出"
 }
 
@@ -367,6 +463,7 @@ while ($true) {
         '3' { Invoke-Rollback }
         '4' { Invoke-WriteConfig }
         '5' { Show-Status }
+        '6' { Invoke-InstallFallback }
         '0' { Write-Host "再见。"; exit }
         default { Write-Host "无效选项，请重新输入。" }
     }
