@@ -50,6 +50,16 @@ function Test-UnityRunning {
     return $null -ne (Get-Process -Name "Unity" -ErrorAction SilentlyContinue)
 }
 
+function Test-FileLocked([string]$Path) {
+    try {
+        $fs = [System.IO.File]::Open($Path, 'Open', 'ReadWrite', 'None')
+        $fs.Close()
+        return $false
+    } catch {
+        return $true
+    }
+}
+
 function Show-Status {
     Write-Host ""
     Write-Host "================= 当前状态 ================="
@@ -94,6 +104,89 @@ function Show-Status {
     Write-Host "============================================="
 }
 
+function Show-Diagnostics {
+    Write-Host ""
+    Write-Host "----------------- 诊断信息 -----------------"
+    Write-Host "当前用户     : $env:USERDOMAIN\$env:USERNAME"
+    Write-Host "是否管理员   : $(Test-Admin)"
+    if (Test-Path -LiteralPath $unityDll) {
+        $item = Get-Item -LiteralPath $unityDll
+        Write-Host "目标属性     : $($item.Attributes)  IsReadOnly=$($item.IsReadOnly)"
+        try {
+            $acl = Get-Acl -LiteralPath $unityDll
+            Write-Host "所有者       : $($acl.Owner)"
+            $adminAce = $acl.Access | Where-Object { $_.IdentityReference -match 'Administrators' } | Select-Object -First 1
+            if ($adminAce) {
+                Write-Host "管理员 ACL   : $($adminAce.FileSystemRights)（$($adminAce.AccessControlType)）"
+            }
+        } catch {
+            Write-Host "读取 ACL 失败: $($_.Exception.Message)"
+        }
+        Write-Host "独占打开目标 : $(if (Test-FileLocked $unityDll) {'失败（被占用或权限不足）'} else {'成功（未被占用）'})"
+    }
+    $unityProc = Get-Process -Name "Unity" -ErrorAction SilentlyContinue
+    Write-Host "Unity 编辑器 : $(if ($unityProc) { ($unityProc.Id -join ',') } else { '未运行' })"
+    $hubCount = @(Get-Process | Where-Object { $_.ProcessName -like 'Unity Hub*' }).Count
+    Write-Host "Unity Hub    : $hubCount 个进程"
+    Write-Host "---------------------------------------------"
+}
+
+function Invoke-FixPermissions {
+    Write-Host ""
+    Write-Host ">>> 修复目标文件权限（takeown + icacls）<<<"
+    if (-not (Test-Admin)) {
+        Write-Host "需要管理员权限，无法修复。"
+        return $false
+    }
+    if (-not (Confirm-Question "将把 compress_bc7e.dll 的所有者改为 Administrators 并授予完全控制，继续？")) {
+        Write-Host "已取消。"
+        return $false
+    }
+    & takeown.exe /F $unityDll
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "takeown 失败（错误码 $LASTEXITCODE）"
+        return $false
+    }
+    & icacls.exe $unityDll /grant "*S-1-5-32-544:(F)"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "icacls 失败（错误码 $LASTEXITCODE）"
+        return $false
+    }
+    Write-Host "权限修复完成。"
+    return $true
+}
+
+function Copy-ShellToUnity {
+    try {
+        Copy-Item -LiteralPath $shellDll -Destination $unityDll -Force
+        return $true
+    } catch {
+        Write-Host "复制失败: $($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Copy-BackupToUnity {
+    try {
+        Copy-Item -LiteralPath $backupDll -Destination $unityDll -Force
+        return $true
+    } catch {
+        Write-Host "复制失败: $($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Show-AccessDeniedHints {
+    Write-Host ""
+    Write-Host "如果重试仍失败，请依次检查："
+    Write-Host "  1) 确认是以管理员身份运行（右键 PowerShell/Windows Terminal -> 以管理员身份运行）；"
+    Write-Host "  2) 打开 Windows 安全中心 -> 病毒和威胁防护 -> 勒索软件防护 ->"
+    Write-Host "     受控文件夹访问 -> 允许应用通过受控文件夹访问，把 PowerShell 加入允许列表"
+    Write-Host "     （或临时关闭受控文件夹访问后重试）；"
+    Write-Host "  3) 关闭 Unity 编辑器与 Unity Hub 后重试；"
+    Write-Host "  4) 若安装了三方安全软件（360/火绒等），把本项目目录和 PowerShell 加入白名单。"
+}
+
 function Invoke-Replace {
     Write-Host ""
     Write-Host ">>> 替换 DLL <<<"
@@ -118,11 +211,32 @@ function Invoke-Replace {
         return
     }
 
-    Copy-Item -LiteralPath $unityDll -Destination $backupDll -Force
-    Write-Host "已备份原 DLL -> $backupDll"
-    Copy-Item -LiteralPath $shellDll -Destination $unityDll -Force
-    Write-Host "已替换 -> $unityDll"
-    Write-Host "完成。请重启 Unity 验证。"
+    try {
+        Copy-Item -LiteralPath $unityDll -Destination $backupDll -Force
+        Write-Host "已备份原 DLL -> $backupDll"
+    } catch {
+        Write-Host "备份失败: $($_.Exception.Message)"
+        Show-Diagnostics
+        return
+    }
+
+    if (Copy-ShellToUnity) {
+        Write-Host "已替换 -> $unityDll"
+        Write-Host "完成。请重启 Unity 验证。"
+        return
+    }
+
+    Show-Diagnostics
+    if (Confirm-Question "是否尝试修复文件权限后重试？") {
+        if (Invoke-FixPermissions) {
+            if (Copy-ShellToUnity) {
+                Write-Host "已替换 -> $unityDll"
+                Write-Host "完成。请重启 Unity 验证。"
+                return
+            }
+        }
+    }
+    Show-AccessDeniedHints
 }
 
 function Invoke-SetEnv {
@@ -190,8 +304,22 @@ function Invoke-Rollback {
         Write-Host "已取消。"
         return
     }
-    Copy-Item -LiteralPath $backupDll -Destination $unityDll -Force
-    Write-Host "已回滚 -> $unityDll"
+
+    if (Copy-BackupToUnity) {
+        Write-Host "已回滚 -> $unityDll"
+        return
+    }
+
+    Show-Diagnostics
+    if (Confirm-Question "是否尝试修复文件权限后重试？") {
+        if (Invoke-FixPermissions) {
+            if (Copy-BackupToUnity) {
+                Write-Host "已回滚 -> $unityDll"
+                return
+            }
+        }
+    }
+    Show-AccessDeniedHints
 }
 
 function Show-Menu {

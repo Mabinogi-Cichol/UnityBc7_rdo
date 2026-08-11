@@ -99,6 +99,21 @@ Copy-Item 'D:\ProjectFiles\Git\UnityBc7_rdo\vendor\compress_bc7e_original.dll' `
           'C:\Program Files\Unity\Unity 2022.3.62f1\Editor\compress_bc7e.dll' -Force
 ```
 
+## 常见问题：替换时 Access denied
+
+备份成功但替换时报 `Access to the path ... is denied`，通常是以下原因：
+
+1. **没有真正以管理员身份运行**：备份只需读权限（普通用户也有），所以备份成功不代表有写权限。
+   请右键 PowerShell / Windows Terminal → **以管理员身份运行**，再执行脚本；
+2. **Windows 受控文件夹访问**（勒索软件防护）拦截了 Program Files 写入：
+   Windows 安全中心 → 病毒和威胁防护 → 勒索软件防护 → 受控文件夹访问 →
+   把 PowerShell 加入“允许应用通过受控文件夹访问”，或临时关闭后重试；
+3. **第三方安全软件**（360、火绒等）拦截：把本项目目录和 PowerShell 加入白名单；
+4. **Unity / Unity Hub 仍在运行**：先全部关闭再替换。
+
+升级后的脚本会在复制失败时自动显示诊断信息（当前用户、管理员状态、文件属性、
+ACL、是否被占用、Unity 进程），并询问是否执行 `takeown + icacls` 修复权限后重试。
+
 ## 注意事项
 
 - 请在 Project Settings 中保持 BC7 Compressor 为 `bc7e`（默认），本 DLL 只影响该路径。
