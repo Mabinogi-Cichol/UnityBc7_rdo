@@ -18,8 +18,7 @@
 #include <mutex>
 
 #include "bc7elib.h"
-#include "ert.h"
-#include "bc7decomp.h"
+#include "rdo_common.h"  // 共享 RDO 代码（配置解析/热重载/apply_rdo/模块目录工具）
 
 namespace
 {
@@ -52,27 +51,13 @@ original_api g_orig;
 std::once_flag g_orig_once;
 char g_orig_error[512] = "";
 
-std::wstring get_module_directory()
-{
-    wchar_t path[MAX_PATH * 4] = {};
-    HMODULE self = nullptr;
-    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                            (LPCWSTR)&get_module_directory, &self))
-        return L".";
-    DWORD n = GetModuleFileNameW(self, path, (DWORD)(_countof(path) - 1));
-    if (!n)
-        return L".";
-    std::wstring full(path, n);
-    size_t slash = full.find_last_of(L"\\/");
-    return (slash == std::wstring::npos) ? L"." : full.substr(0, slash);
-}
-
 bool resolve_original_dll_path(std::wstring& out_path)
 {
     // 与本 DLL 同目录下的原始副本（替换脚本会把 Unity 原 DLL 改名为
     // compress_bc7e_original.dll 放入同目录）
-    std::wstring dir = get_module_directory();
+    // （模块目录由共享工具 rdo::module_directory 解析，&resolve_original_dll_path
+    //   即本 DLL 内地址）
+    std::wstring dir = rdo::module_directory((LPCVOID)&resolve_original_dll_path);
     out_path = dir + L"\\compress_bc7e_original.dll";
     if (GetFileAttributesW(out_path.c_str()) != INVALID_FILE_ATTRIBUTES)
         return true;
@@ -135,126 +120,10 @@ const original_api& original()
 }
 
 // ---------------------------------------------------------------------------
-// RDO 配置（仅读取与壳 DLL 同目录的 bc7_rdo_config.txt，文件修改后自动重读）
+// RDO 配置与后处理：已提取到共享头 rdo_common.h（rdo::load_config /
+// rdo::watched_config / rdo::apply_rdo / rdo::module_directory 等），
+// 行为与重构前完全一致，供本 DLL 与注入版 hook DLL 共用。
 // ---------------------------------------------------------------------------
-
-struct rdo_config
-{
-    float lambda = 0.0f;
-    uint32_t lookback = 128;
-    float smooth_scale = 15.0f;
-    float max_rms_increase_ratio = 10.0f;
-    bool two_matches = true;
-    bool debug = false;
-};
-
-std::wstring get_config_path()
-{
-    // 与本 DLL 同目录下的配置文件
-    return get_module_directory() + L"\\bc7_rdo_config.txt";
-}
-
-rdo_config parse_config_file(const std::wstring& path)
-{
-    rdo_config c;
-
-    FILE* f = _wfopen(path.c_str(), L"r");
-    if (!f)
-        return c;
-
-    char line[256];
-    while (fgets(line, sizeof(line), f))
-    {
-        char key[64] = {}, value[128] = {};
-        if (sscanf(line, " %63[^= \t] = %127s", key, value) != 2)
-            continue;
-        if (!_stricmp(key, "lambda"))
-            c.lambda = (float)atof(value);
-        else if (!_stricmp(key, "lookback"))
-            c.lookback = (uint32_t)strtoul(value, nullptr, 10);
-        else if (!_stricmp(key, "smooth_scale"))
-            c.smooth_scale = (float)atof(value);
-        else if (!_stricmp(key, "max_rms_increase_ratio"))
-            c.max_rms_increase_ratio = (float)atof(value);
-        else if (!_stricmp(key, "two_matches"))
-            c.two_matches = atoi(value) != 0;
-        else if (!_stricmp(key, "debug"))
-            c.debug = atoi(value) != 0;
-    }
-    fclose(f);
-    return c;
-}
-
-const rdo_config& config()
-{
-    // 每次调用前检查配置文件是否新建/修改，避免首次解析后无法感知变化。
-    static rdo_config cached;
-    static FILETIME cached_time = {};
-    static bool first = true;
-    static std::wstring cached_path;
-
-    std::wstring path = get_config_path();
-    if (path != cached_path)
-    {
-        first = true;
-        cached_time = FILETIME{};
-        cached_path = path;
-    }
-    WIN32_FILE_ATTRIBUTE_DATA fad = {};
-    BOOL exists = GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad);
-
-    if (!exists)
-    {
-        if (first)
-        {
-            cached = rdo_config();
-            first = false;
-        }
-        return cached;
-    }
-
-    if (first || CompareFileTime(&fad.ftLastWriteTime, &cached_time) != 0)
-    {
-        cached = parse_config_file(path);
-        cached_time = fad.ftLastWriteTime;
-        first = false;
-    }
-    return cached;
-}
-
-bool unpack_bc7_callback(const void* pBlock, ert::color_rgba* pPixels,
-                         uint32_t /*block_index*/, void* /*pUserData*/)
-{
-    return bc7decomp::unpack_bc7(pBlock,
-                                 reinterpret_cast<bc7decomp::color_rgba*>(pPixels));
-}
-
-void apply_rdo(uint32_t num_blocks, uint64_t* pBlocks, const uint32_t* pPixelsRGBA)
-{
-    const rdo_config& cfg = config();
-    float lambda = cfg.lambda;
-    if (lambda <= 0.0f || !num_blocks)
-        return;
-
-    ert::reduce_entropy_params ep;
-    ep.m_lambda = lambda;
-    ep.m_lookback_window_size = cfg.lookback;
-    ep.m_smooth_block_max_mse_scale = cfg.smooth_scale;
-    ep.m_max_allowed_rms_increase_ratio = cfg.max_rms_increase_ratio;
-    ep.m_try_two_matches = cfg.two_matches;
-    ep.m_debug_output = cfg.debug;
-
-    uint32_t modified = 0;
-    ert::reduce_entropy(
-        pBlocks, num_blocks,
-        16 /*total_block_stride_in_bytes*/,
-        16 /*block_size_to_optimize_in_bytes*/,
-        4 /*block_width*/, 4 /*block_height*/, 4 /*num_comps*/,
-        reinterpret_cast<const ert::color_rgba*>(pPixelsRGBA),
-        ep, modified,
-        unpack_bc7_callback, nullptr,
-        nullptr /*pBlock_mse_scales*/);
-}
 
 } // namespace
 
@@ -359,7 +228,7 @@ extern "C" void bc7elib_compress_blocks(
     else
         memset(pBlocks, 0, (size_t)num_blocks * 16u);
 
-    apply_rdo(num_blocks, pBlocks, pPixelsRGBA);
+    rdo::apply_rdo(num_blocks, pBlocks, pPixelsRGBA);
 }
 
 extern "C" uint32_t bc7elib_debug_unpack_blocks(

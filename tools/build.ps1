@@ -80,10 +80,43 @@ $sources = @(
 $include = $rdo
 
 Write-Host "Building compress_bc7e.dll with toolchain at: $vsPath"
-$clCmd = "call `"$vcvars`" >nul 2>&1 && cl /nologo /O2 /EHsc /std:c++17 /MT /DNOMINMAX /D_CRT_SECURE_NO_WARNINGS /I `"$include`" /LD /Fo$out\ $sources /Fe:`"$out\compress_bc7e.dll`" /link /NOLOGO"
+$clCmd = "call `"$vcvars`" >nul 2>&1 && cl /nologo /O2 /EHsc /std:c++17 /utf-8 /MT /DNOMINMAX /D_CRT_SECURE_NO_WARNINGS /I `"$include`" /LD /Fo$out\ $sources /Fe:`"$out\compress_bc7e.dll`" /link /NOLOGO"
 cmd /c $clCmd
 if ($LASTEXITCODE -ne 0) {
     throw "cl failed with exit code $LASTEXITCODE"
+}
+
+# ---- 注入版（外挂）组件 ----
+# hook DLL：注入 Unity 进程后对 compress_bc7e.dll 导出桩做 inline detour + RDO
+$hookSources = @(
+    (Join-Path $srcDir "bc7_hook_dll.cpp"),
+    (Join-Path $rdo "ert.cpp"),
+    (Join-Path $rdo "bc7decomp.cpp")
+) -join " "
+
+Write-Host "Building bc7_rdo_hook.dll ..."
+$clHook = "call `"$vcvars`" >nul 2>&1 && cl /nologo /O2 /EHsc /std:c++17 /utf-8 /MT /DNOMINMAX /D_CRT_SECURE_NO_WARNINGS /I `"$include`" /I `"$srcDir`" /LD /Fo$out\ $hookSources /Fe:`"$out\bc7_rdo_hook.dll`" /link /NOLOGO"
+cmd /c $clHook
+if ($LASTEXITCODE -ne 0) {
+    throw "hook DLL build failed with exit code $LASTEXITCODE"
+}
+
+# 注入器：启动/附加 Unity Editor 并把 hook DLL 注入目标进程
+$injectorSrc = Join-Path $srcDir "bc7rdo_injector.cpp"
+Write-Host "Building bc7rdo_injector.exe ..."
+$clInjector = "call `"$vcvars`" >nul 2>&1 && cl /nologo /O2 /EHsc /std:c++17 /utf-8 /MT /D_CRT_SECURE_NO_WARNINGS /I `"$srcDir`" /Fo$out\ $injectorSrc /Fe:`"$out\bc7rdo_injector.exe`" /link /NOLOGO /SUBSYSTEM:CONSOLE"
+cmd /c $clInjector
+if ($LASTEXITCODE -ne 0) {
+    throw "injector build failed with exit code $LASTEXITCODE"
+}
+
+# 测试目标：自动化验证"远程注入 -> hook 生效"链路
+$targetSrc = Join-Path $srcDir "bc7rdo_test_target.cpp"
+Write-Host "Building bc7rdo_test_target.exe ..."
+$clTarget = "call `"$vcvars`" >nul 2>&1 && cl /nologo /O2 /EHsc /std:c++17 /utf-8 /MT /D_CRT_SECURE_NO_WARNINGS /I `"$srcDir`" /Fo$out\ $targetSrc /Fe:`"$out\bc7rdo_test_target.exe`" /link /NOLOGO /SUBSYSTEM:CONSOLE"
+cmd /c $clTarget
+if ($LASTEXITCODE -ne 0) {
+    throw "test target build failed with exit code $LASTEXITCODE"
 }
 
 # 把原始 DLL 副本放到输出目录，保证壳 DLL 能找到它（项目内副本，绝不触碰 Unity 目录）
@@ -100,3 +133,18 @@ if ($dumpbinPath) {
     & $dumpbinPath /exports (Join-Path $out "compress_bc7e.dll") | Out-File -FilePath (Join-Path $out "exports.txt") -Encoding utf8
     Write-Host "Exports written to out\exports.txt"
 }
+
+# ---- Editor Plugin 打包（放进工程 Assets 下即生效，无需注入器） ----
+$pluginSrcDir = Join-Path $srcDir "editor_plugin"
+$pluginOutDir = Join-Path $out "editor-plugin\Bc7Rdo"
+New-Item -ItemType Directory -Force -Path $pluginOutDir | Out-Null
+
+Copy-Item -LiteralPath (Join-Path $pluginSrcDir "hook_loader.cs") -Destination $pluginOutDir -Force
+Copy-Item -LiteralPath (Join-Path $pluginSrcDir "Bc7Rdo.Editor.asmdef") -Destination $pluginOutDir -Force
+Copy-Item -LiteralPath (Join-Path $out "bc7_rdo_hook.dll") -Destination $pluginOutDir -Force
+Copy-Item -LiteralPath (Join-Path $root "bc7_rdo_config.txt") -Destination $pluginOutDir -Force
+Copy-Item -LiteralPath (Join-Path $pluginSrcDir "README.md") -Destination (Join-Path $out "editor-plugin") -Force
+
+Write-Host ""
+Write-Host "Editor plugin staged: out\editor-plugin\Bc7Rdo\（复制到工程 Assets 下即可）"
+Get-ChildItem -LiteralPath $pluginOutDir | Select-Object Name, Length
