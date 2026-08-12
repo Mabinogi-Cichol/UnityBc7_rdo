@@ -11,18 +11,20 @@ $releaseDir = Join-Path $root "release\$Version"
 # 1. 先构建
 & (Join-Path $PSScriptRoot "build.ps1")
 
-# 2. 组装 release 目录
+# 2. 组装 release 目录（先清空，避免残留旧版文件）
+if (Test-Path -LiteralPath $releaseDir) {
+    Remove-Item -LiteralPath $releaseDir -Recurse -Force
+}
 New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
 
 Copy-Item -LiteralPath (Join-Path $out "compress_bc7e.dll") -Destination $releaseDir -Force
-Copy-Item -LiteralPath (Join-Path $out "compress_bc7e_original.dll") -Destination $releaseDir -Force
 Copy-Item -LiteralPath (Join-Path $out "exports.txt") -Destination $releaseDir -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "enable_unity_rdo.ps1") -Destination $releaseDir -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "unity_dirs.ps1") -Destination $releaseDir -Force
 
 # 配置示例
 $configExample = @"
-# bc7_rdo_config.txt 示例：与本 DLL 放在同一目录
-# 也可用环境变量 BC7_RDO_CONFIG 指定任意路径的配置文件（优先级高于同目录文件）
-# 环境变量优先级高于本文件（BC7_RDO_LAMBDA / BC7_RDO_LOOKBACK / ...）
+# bc7_rdo_config.txt 示例：与壳 DLL 放在同一目录（即 Unity Editor 目录）
 lambda=1.0
 lookback=128
 smooth_scale=15
@@ -39,33 +41,47 @@ compress_bc7e_rdo $Version - Unity BC7 RDO shell DLL (win-x64)
 
 文件说明
 --------
-- compress_bc7e.dll          壳 DLL（导出与 Unity 原 DLL 一致）
-- compress_bc7e_original.dll Unity 原 DLL 的项目内副本（转发目标；Unity 专有二进制，
-                              仅限本地使用，禁止公开分发）
-- bc7_rdo_config.txt.example RDO 配置文件示例（复制为 bc7_rdo_config.txt 使用；
-                              也可用环境变量 BC7_RDO_CONFIG 指向任意路径的配置）
+- compress_bc7e.dll          壳 DLL（导出与 Unity 原 DLL 一致）。只读取与自身同目录的
+                              compress_bc7e_original.dll 转发压缩，并按同目录的
+                              bc7_rdo_config.txt 做 RDO 后处理，无任何环境变量
+- enable_unity_rdo.ps1       安装/回滚脚本（与壳 DLL 同目录使用，需管理员权限）
+- unity_dirs.ps1             脚本依赖的共享检测模块（请勿删除）
+- bc7_rdo_config.txt.example 配置示例（脚本替换时会自动生成正式配置）
 - exports.txt                导出表
 
 使用方法
 --------
-1. 保持 compress_bc7e.dll 与 compress_bc7e_original.dll 在同一目录；
-   或设置环境变量 BC7E_ORIGINAL_DLL 指向原 DLL 副本。
-2. 默认行为：转发到原 DLL，输出逐字节一致（RDO 关闭）。
-3. 开启 RDO：设置 BC7_RDO_LAMBDA > 0（建议 0.25 ~ 4.0），或在本目录放置
-   bc7_rdo_config.txt（内容见示例）；配置文件也可用 BC7_RDO_CONFIG 指向其他路径。
+1. 把压缩包解压到任意目录。
+2. 右键 PowerShell / Windows Terminal -> 以管理员身份运行，执行：
+   powershell -ExecutionPolicy Bypass -File enable_unity_rdo.ps1
+   脚本自动检测 Unity 安装目录（C:\Program Files\Unity 下直接安装与 Hub\Editor 两种布局，
+   多个版本时按编号选择），也可用 -UnityDir 手动指定。
+3. 选择"替换"，按提示输入 lambda（默认 1.0）。脚本自动完成：
+   - 把 Unity Editor 目录中的原版 compress_bc7e.dll 改名为 compress_bc7e_original.dll；
+   - 复制 compress_bc7e.dll 为壳 DLL；
+   - 写入 bc7_rdo_config.txt。
+4. 完全退出并重启 Unity，重新导入纹理。
 
-侧信道参数（环境变量优先）
---------------------------
-BC7_RDO_LAMBDA                  RDO 强度，0=关闭（默认）
-BC7_RDO_LOOKBACK                回看窗口字节数，默认 128
-BC7_RDO_SMOOTH_SCALE            平滑块误差放大系数，默认 15
-BC7_RDO_MAX_RMS_INCREASE_RATIO  允许 RMS 最大增幅，默认 10
-BC7_RDO_TWO_MATCHES             是否尝试两个匹配，默认 1
-BC7_RDO_DEBUG                   调试输出，默认 0
+回滚
+----
+再次运行 enable_unity_rdo.ps1，选择"回滚"即可一键恢复原状：
+删除壳 DLL -> compress_bc7e_original.dll 改名为 compress_bc7e.dll -> 删除 bc7_rdo_config.txt。
+
+配置
+----
+bc7_rdo_config.txt 与壳 DLL 同目录（即 Unity Editor 目录），修改后自动生效：
+lambda=1.0                  RDO 强度，0=关闭；建议 0.25~4.0（默认 1.0）
+lookback=128                回看窗口字节数
+smooth_scale=15             平滑块误差放大系数
+max_rms_increase_ratio=10   允许 RMS 最大增幅
+two_matches=1               是否尝试两个匹配
+debug=0                     调试输出
 
 注意
 ----
-- 本项目未修改 Unity 安装目录；在编辑器内实际替换 DLL 前请评估 Unity EULA 与版本兼容风险。
+- 替换 Unity 目录中的 DLL 前请评估 Unity EULA 与版本兼容风险。
+- Unity 升级后可能覆盖/失效，需重新执行替换。
+- 多个 Unity 版本相互独立，需要分别替换/回滚。
 - BC7 每块固定 16 字节，RDO 收益体现在块流被 LZ4/LZMA 等再次压缩时。
 "@
 Set-Content -LiteralPath (Join-Path $releaseDir "README-release.txt") -Value $releaseReadme -Encoding utf8

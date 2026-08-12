@@ -9,10 +9,12 @@
 - PowerShell 5.1+（推荐 PowerShell 7）
 - 仅运行测试时需要 Python 3.10+（可选，测试报告与对比图依赖 PIL；无 PIL 时测试会失败）
 - `vendor/bc7enc_rdo/` 已随仓库提供（构建所需的三方源码）
-- 原 DLL 副本：`vendor/compress_bc7e_original.dll` 不纳入 git，构建脚本会自动恢复：
-  1. 优先使用环境变量 `UNITY_BC7E_DLL` 指向的 Unity 原 DLL；
-  2. 否则从 `C:\Program Files\Unity\Unity 2022.3.62f1\Editor\compress_bc7e.dll` 复制；
-  3. 若都不存在，构建失败并提示。
+- 原 DLL 副本：`vendor/compress_bc7e_original.dll` 不纳入 git，构建脚本会自动检测
+  Unity 安装目录并恢复：
+  1. 优先使用**已替换目录**里的 `compress_bc7e_original.dll`（保证版本精确匹配）；
+  2. 其次使用原版 `compress_bc7e.dll`；
+  3. 也可用 `tools\build.ps1 -UnityDir` 手动指定 Unity Editor 目录；
+  4. 若都找不到，构建失败并提示。
 
 ## 2. 一键构建
 
@@ -58,11 +60,11 @@ python tests\test_compat.py
 
 ### 报错“缺少 vendor\compress_bc7e_original.dll”
 
-确认本机 Unity 版本为 2022.3.62f1，或用 `UNITY_BC7E_DLL` 指定原 DLL 路径：
+确认本机 Unity 安装目录存在 `compress_bc7e.dll`（或已替换的
+`compress_bc7e_original.dll`），或用 `-UnityDir` 手动指定 Unity Editor 目录：
 
 ```powershell
-$env:UNITY_BC7E_DLL = "C:\Program Files\Unity\Unity 2022.3.62f1\Editor\compress_bc7e.dll"
-powershell -ExecutionPolicy Bypass -File tools\build.ps1
+powershell -ExecutionPolicy Bypass -File tools\build.ps1 -UnityDir "C:\Program Files\Unity\Unity 2022.3.62f1\Editor"
 ```
 
 ### 测试报 PIL 相关错误
@@ -82,7 +84,8 @@ powershell -ExecutionPolicy Bypass -File tools\make_release.ps1 -Version v0.1.0
 脚本会先执行构建，然后在 `release\v0.1.0\` 生成：
 
 - `compress_bc7e.dll`
-- `compress_bc7e_original.dll`（运行时转发目标，Unity 专有二进制，仅限本地使用，禁止公开分发）
+- `enable_unity_rdo.ps1`（安装/回滚脚本）
+- `unity_dirs.ps1`（脚本依赖的 Unity 安装目录检测模块）
 - `bc7_rdo_config.txt.example`
 - `README-release.txt`
 - `exports.txt`

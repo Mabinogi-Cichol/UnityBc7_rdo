@@ -13,7 +13,6 @@
 import ctypes
 import json
 import math
-import os
 import random
 import sys
 import zlib
@@ -355,7 +354,9 @@ def main():
                     diff = block_diff_count(out_orig, out_wrap)
                     failed.append(f"forward mismatch {key}: {diff} blocks differ")
 
-    # 4. RDO 模式：体积 vs 质量
+    # 4. RDO 模式：体积 vs 质量（通过同目录 bc7_rdo_config.txt 控制 lambda）
+    cfg_path = WRAPPER_DLL.parent / "bc7_rdo_config.txt"
+    cfg_path.unlink(missing_ok=True)  # 确保基线是无 RDO 的转发输出
     pixels, num_blocks = image_data["photo"]
     params = orig.make_params("basic", True)
     baseline = wrap.compress_bytes(pixels, num_blocks, params)
@@ -364,11 +365,11 @@ def main():
     baseline_psnr = psnr(pixels, baseline_dec)
 
     for lam in [0.0, 0.25, 0.5, 1.0, 2.0, 4.0]:
-        os.environ["BC7_RDO_LAMBDA"] = str(lam)
-        try:
-            rdo_bytes = wrap.compress_bytes(pixels, num_blocks, params)
-        finally:
-            os.environ.pop("BC7_RDO_LAMBDA", None)
+        cfg_path.write_text(
+            f"lambda={lam}\nlookback=128\nsmooth_scale=15\n"
+            f"max_rms_increase_ratio=10\ntwo_matches=1\ndebug=0\n",
+            encoding="utf-8")
+        rdo_bytes = wrap.compress_bytes(pixels, num_blocks, params)
 
         rdo_z = zlib_size(rdo_bytes)
         rdo_dec = wrap.decompress_bytes(rdo_bytes, num_blocks)
@@ -415,8 +416,7 @@ def main():
     blocks_to_image(rdo1_dec, num_blocks, blocks_x, blocks_y,
                     ROOT / "out" / "test_bc7_rdo_lambda1.png")
 
-    # 5. 配置文件侧信道（bc7_rdo_config.txt）
-    cfg_path = WRAPPER_DLL.parent / "bc7_rdo_config.txt"
+    # 5. 配置文件侧信道（bc7_rdo_config.txt，与壳 DLL 同目录）
     cfg_path.write_text("lambda=1.5\nlookback=256\ntwo_matches=1\n", encoding="utf-8")
     try:
         out_cfg = wrap.compress_bytes(pixels, num_blocks, params)
@@ -427,22 +427,6 @@ def main():
         }
     finally:
         cfg_path.unlink(missing_ok=True)
-
-    # 6. BC7_RDO_CONFIG 环境变量指向项目内配置文件
-    cfg_env_path = WRAPPER_DLL.parent / "bc7_rdo_config_env.txt"
-    cfg_env_path.write_text("lambda=1.5\nlookback=256\n", encoding="utf-8")
-    try:
-        os.environ["BC7_RDO_CONFIG"] = str(cfg_env_path)
-        out_cfg_env = wrap.compress_bytes(pixels, num_blocks, params)
-        os.environ.pop("BC7_RDO_CONFIG", None)
-        results["config_env_file"] = {
-            "file": str(cfg_env_path),
-            "zlib9_bytes": zlib_size(out_cfg_env),
-            "differs_from_baseline": out_cfg_env != baseline,
-        }
-    finally:
-        os.environ.pop("BC7_RDO_CONFIG", None)
-        cfg_env_path.unlink(missing_ok=True)
 
     # 输出
     REPORT.parent.mkdir(parents=True, exist_ok=True)
@@ -471,7 +455,6 @@ def main():
               f"changed={v['blocks_changed_pct']}%")
 
     print(f"\n配置文件侧信道: {results['config_file']}")
-    print(f"BC7_RDO_CONFIG 环境变量侧信道: {results['config_env_file']}")
     print(f"\n报告已写入: {REPORT}")
 
     if failed:

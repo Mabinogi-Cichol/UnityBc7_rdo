@@ -9,7 +9,7 @@
 
 用户问题：参考 Unreal Engine 文档（Oodle Texture RDO，默认 λ=30），问 UE 的 30 对应本库（Unity BC7 RDO 壳 DLL，基于 richgel999 BC7E RDO）的 lambda 值是多少。
 
-本库通过 `bc7_rdo_config.txt` / 环境变量 `BC7_RDO_LAMBDA` 控制 RDO 强度（0=关闭，建议 0.25–4.0，默认 1.0）。
+本库通过 `bc7_rdo_config.txt`（与壳 DLL 同目录）控制 RDO 强度（lambda=0 关闭，建议 0.25–4.0，默认 1.0）。
 
 ## 2. 结论摘要
 

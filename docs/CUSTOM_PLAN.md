@@ -10,7 +10,7 @@
 | --- | --- |
 | 直接分析/替换 Unity 安装目录下的 `compress_bc7e.dll` | **禁止**。只把原 DLL 复制到项目 `vendor/compress_bc7e_original.dll`，所有分析、验证都在项目内进行 |
 | 编写完全独立的 BC7+RDO 编码器并整体替换 | 采用**“转发 + 后处理”**架构：默认把调用转发给项目内的原 DLL 副本（基线输出逐字节一致），RDO 开启时对 BC7 块流做 ERT 率失真后处理 |
-| 侧信道靠环境变量 | 支持环境变量 **和** 配置文件 `bc7_rdo_config.txt`（文件修改后自动重读），环境变量优先级更高 |
+| 侧信道靠配置文件 | 仅配置文件 `bc7_rdo_config.txt`（与壳 DLL 同目录，修改后自动重读） |
 | 直接替换后重启 Unity 验证 | 用 Python ctypes 测试台在项目内验证 ABI 兼容、字节一致性、压缩率与质量曲线 |
 
 ## 2. 环境
@@ -42,8 +42,9 @@
 - 源码：`src/compress_bc7e_rdo.cpp`、`src/bc7elib.h`
 - 构建：`tools/build.ps1` → `out/compress_bc7e.dll`（同时把原 DLL 副本放入 `out/`）
 - 行为：
-  1. 默认**转发**给 `compress_bc7e_original.dll`（查找顺序：环境变量 `BC7E_ORIGINAL_DLL` → 本 DLL 同目录 → 工作目录）；
-  2. 若 `BC7_RDO_LAMBDA > 0`，对压缩后的块流调用 `ert::reduce_entropy` 做 RDO 后处理；
+  1. **转发**给与自身同目录的 `compress_bc7e_original.dll`；
+  2. 读取与自身同目录的 `bc7_rdo_config.txt`，lambda>0 时对压缩后的块流调用
+     `ert::reduce_entropy` 做 ERT RDO 后处理；
   3. 额外导出 `bc7elib_debug_unpack_blocks` 供测试解码（Unity 不会调用）。
 
 ### 3.4 验证
@@ -71,7 +72,7 @@
 
 ## 5. 后续可选步骤（均不修改 Unity 目录）
 
-- 用 `AssetPostprocessor` 在纹理导入前把 λ 写入环境变量/配置文件，实现“导入时按纹理设置 RDO 强度”。
+- 用 `AssetPostprocessor` 在纹理导入前把 λ 写入配置文件 `bc7_rdo_config.txt`，实现“导入时按纹理设置 RDO 强度”。
 - 对比不同 λ 下 AssetBundle（LZ4/LZMA）实际体积与视觉质量，确定默认 λ。
 - 若要完整替代编码器（不依赖原 DLL），可用 `bc7enc_rdo` 的 `bc7e.ispc` + ISPC 编译器重新实现 `bc7elib_compress_blocks`。
 

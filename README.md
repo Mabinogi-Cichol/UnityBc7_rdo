@@ -1,6 +1,6 @@
 # Unity BC7 RDO 实验（项目内安全版）
 
-针对 Unity 2022.3 的 `compress_bc7e.dll`，在**完全不修改 Unity 安装目录**的前提下，实现并验证：
+针对 Unity 2022.3 的 `compress_bc7e.dll`，在**可选的替换（支持一键回滚）**前提下，实现并验证：
 
 1. 完整复刻其导出接口（10 个 `bc7elib_*` 函数）；
 2. 默认转发到项目内的原 DLL 副本，压缩输出逐字节一致；
@@ -17,6 +17,8 @@ src/
   compress_bc7e_rdo.cpp         # 壳 DLL 实现
 tools/
   build.ps1                     # 一键构建
+  enable_unity_rdo.ps1          # Unity 中 DLL 的替换/回滚脚本
+  unity_dirs.ps1                # 脚本依赖的 Unity 安装目录检测模块
 tests/
   test_compat.py                # 兼容性与 RDO 验证
 docs/
@@ -40,9 +42,10 @@ powershell -ExecutionPolicy Bypass -File tools\build.ps1
 - `out/exports.txt` —— 导出表自检
 
 > 注意：`vendor/compress_bc7e_original.dll` 是 Unity 专有二进制，**不纳入版本库**。
-> 克隆/切换环境后运行 `tools/build.ps1` 会自动从
-> `C:\Program Files\Unity\Unity 2022.3.62f1\Editor\compress_bc7e.dll`
-> 恢复副本；也可用环境变量 `UNITY_BC7E_DLL` 指定其他路径。
+> 克隆/切换环境后运行 `tools/build.ps1` 会自动检测 Unity 安装目录恢复副本
+> （优先用已替换目录里的 `compress_bc7e_original.dll`，其次原版
+> `compress_bc7e.dll`）；也可用 `tools\build.ps1 -UnityDir` 手动指定
+> Unity Editor 目录。
 
 ## 发布 Release
 
@@ -51,7 +54,7 @@ powershell -ExecutionPolicy Bypass -File tools\make_release.ps1 -Version v0.1.0
 ```
 
 脚本先构建 DLL，再生成 `release\v0.1.0\` 目录与
-`release\compress_bc7e_rdo-v0.1.0-win-x64.zip` 压缩包（含 DLL、原 DLL 副本、
+`release\compress_bc7e_rdo-v0.1.0-win-x64.zip` 压缩包（含壳 DLL、安装/回滚脚本、
 配置示例、README、导出表与 SHA256SUMS）。
 
 打完包后可用 git 标签标记版本：
@@ -83,50 +86,31 @@ python tests\test_compat.py
 
 报告：`out/test_report.json`；对比图：`out/test_photo_source.png`、`out/test_bc7_baseline.png`、`out/test_bc7_rdo_lambda1.png`。
 
-## 使用（RDO 侧信道）
+## 使用（替换 Unity 中的 DLL）
 
-壳 DLL 每次 `bc7elib_compress_blocks` 调用时读取配置：
+三步走：把 release 包解压到任意目录 → 以管理员身份运行 `enable_unity_rdo.ps1`
+（自动检测 Unity 安装目录，多个版本时按编号选择）→ 选"替换"。
 
-1. 环境变量（优先级高）：
-   - `BC7_RDO_LAMBDA`：0=关闭；建议 0.25–4.0
-   - `BC7_RDO_LOOKBACK`：回看窗口字节数，默认 128
-   - `BC7_RDO_SMOOTH_SCALE`：平滑块误差放大系数，默认 15
-   - `BC7_RDO_MAX_RMS_INCREASE_RATIO`：默认 10
-   - `BC7_RDO_TWO_MATCHES`：默认 1
-   - `BC7_RDO_DEBUG`：默认 0
-   - `BC7E_ORIGINAL_DLL`：指定原 DLL 副本路径
-2. 配置文件：**与壳 DLL 同目录的 `bc7_rdo_config.txt`**（Unity 安装目录内），例如：
+1. 解压 release 包（如 `release\compress_bc7e_rdo-v0.1.0-win-x64.zip`）到任意目录；
+2. **以管理员身份**运行 `enable_unity_rdo.ps1`，脚本自动检测 Unity 安装目录
+   （`C:\Program Files\Unity` 下直接安装与 `Hub\Editor` 两种布局；多版本时编号选择，
+   也可用 `-UnityDir` 手动指定）；
+3. 选择"替换"，按提示输入 lambda（默认 1.0）。脚本自动完成：
+   把 Unity Editor 目录中的原版 `compress_bc7e.dll` 改名为 `compress_bc7e_original.dll`
+   → 复制壳 DLL 为 `compress_bc7e.dll` → 写入 `bc7_rdo_config.txt`；
+4. 完全退出并重启 Unity，重新导入纹理。
 
-```text
-lambda=1.0
-lookback=256
-two_matches=1
-```
+**修改 lambda**：直接编辑 Unity Editor 目录中（与壳 DLL 同目录）的
+`bc7_rdo_config.txt`，保存后自动生效，无需重启。
 
-配置文件修改后会被自动重读。
+**已替换检测**：目标 Unity Editor 目录存在 `compress_bc7e_original.dll` 即表示已替换。
 
-### 推荐：兜底文件方案（免环境变量）
+**回滚**：再次运行 `enable_unity_rdo.ps1`，在菜单中选"回滚"即可一键恢复原状
+（删除壳 DLL → 把 `compress_bc7e_original.dll` 改名回 `compress_bc7e.dll` → 删除
+`bc7_rdo_config.txt`）。
 
-用 `tools\enable_unity_rdo.ps1`（选项 1 或 6），把原 DLL 副本 `compress_bc7e_original.dll`
-和配置文件 `bc7_rdo_config.txt` 一起装入 Unity 安装目录（壳 DLL 同目录）。
-壳 DLL 会优先在自身目录找到这两个文件，**完全不依赖环境变量**：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File tools\enable_unity_rdo.ps1   # 菜单选 1 或 6
-```
-
-> ⚠️ 环境变量在进程启动时读取：如果只设置环境变量而不安装兜底文件，修改后
-> 必须**完全退出并重启 Unity** 才生效，否则壳 DLL 找不到原 DLL 会输出全零块
-> （纹理显示为全透明/黑图）。兜底文件方案没有这个问题。
-
-也可以把配置文件放在项目里，用环境变量 `BC7_RDO_CONFIG` 指向它（可选，优先级更高）：
-
-```powershell
-[Environment]::SetEnvironmentVariable(
-    'BC7_RDO_CONFIG',
-    'D:\ProjectFiles\Git\UnityBc7_rdo\bc7_rdo_config.txt',
-    'User')
-```
+壳 DLL 只读取**与自身同目录**的 `compress_bc7e_original.dll`（转发目标）与
+`bc7_rdo_config.txt`（RDO 配置），无任何环境变量。
 
 详见 [docs/USING_WITH_UNITY.md](docs/USING_WITH_UNITY.md)。
 
@@ -143,7 +127,8 @@ powershell -ExecutionPolicy Bypass -File tools\enable_unity_rdo.ps1   # 菜单�
 
 ## 重要说明
 
-- 本项目**没有**也不会修改 Unity 安装目录。壳 DLL 只调用项目内的原 DLL 副本。
+- 替换行为由脚本完成：把 Unity 目录中的原版 DLL 改名为 `compress_bc7e_original.dll`
+  并装入壳 DLL，支持一键回滚。壳 DLL 只调用与自身同目录的原 DLL 副本，无任何环境变量。
 - BC7 每块固定 16 字节，RDO 收益体现在块流被 LZ 再次压缩时（如 AssetBundle 的 LZ4/LZMA 阶段）。
 - 若要在 Unity 编辑器内实际替换 DLL，请先自行评估 Unity EULA 与版本兼容风险；本项目仅提供可验证的实验实现。
 - 第三方代码许可：`bc7enc_rdo`（MIT / Public Domain，见 `vendor/bc7enc_rdo/LICENSE`），`bc7e`（Apache-2.0，仅作对照参考，未编译进壳 DLL）。

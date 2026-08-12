@@ -1,8 +1,11 @@
 param(
-    [string]$Configuration = "Release"
+    [string]$Configuration = "Release",
+    [string]$UnityDir = ""
 )
 
 $ErrorActionPreference = "Stop"
+
+. (Join-Path $PSScriptRoot "unity_dirs.ps1")
 
 $root = Split-Path -Parent $PSScriptRoot
 $out  = Join-Path $root "out"
@@ -15,16 +18,43 @@ New-Item -ItemType Directory -Force -Path $out | Out-Null
 # 确保原 DLL 副本存在（不提交到 git；缺失时从 Unity 安装目录自动恢复）
 $origDll = Join-Path $vendor "compress_bc7e_original.dll"
 if (-not (Test-Path -LiteralPath $origDll)) {
-    $unityDll = $env:UNITY_BC7E_DLL
-    if (-not $unityDll) {
-        $unityDll = "C:\Program Files\Unity\Unity 2022.3.62f1\Editor\compress_bc7e.dll"
-    }
-    if (Test-Path -LiteralPath $unityDll) {
-        Copy-Item -LiteralPath $unityDll -Destination $origDll -Force
-        Write-Host "Restored original DLL copy from: $unityDll"
+    $srcDll = $null
+    if ($UnityDir) {
+        # 手动指定 Editor 目录：优先 compress_bc7e_original.dll，否则 compress_bc7e.dll
+        $manualOrig = Join-Path $UnityDir "compress_bc7e_original.dll"
+        if (Test-Path -LiteralPath $manualOrig) {
+            $srcDll = $manualOrig
+        } else {
+            $manualDll = Join-Path $UnityDir "compress_bc7e.dll"
+            if (Test-Path -LiteralPath $manualDll) {
+                $srcDll = $manualDll
+            }
+        }
     } else {
-        throw "缺少 vendor\compress_bc7e_original.dll，且未找到 Unity 原 DLL（可用环境变量 UNITY_BC7E_DLL 指定）"
+        $dirs = @(Find-UnityEditorDirs)
+        # 优先 Replaced=$true 的目录，用其中的 compress_bc7e_original.dll
+        # （这样即使该 Unity 已被替换过，也能拿到真正的原 DLL）
+        $replaced = $dirs | Where-Object { $_.Replaced } | Select-Object -First 1
+        if ($replaced) {
+            $candidate = Join-Path $replaced.Dir "compress_bc7e_original.dll"
+            if (Test-Path -LiteralPath $candidate) {
+                $srcDll = $candidate
+            }
+        }
+        # 都没有时，取第一个目录的 compress_bc7e.dll
+        if (-not $srcDll -and $dirs) {
+            $first = $dirs | Select-Object -First 1
+            $candidate = $first.Dll
+            if (Test-Path -LiteralPath $candidate) {
+                $srcDll = $candidate
+            }
+        }
     }
+    if (-not $srcDll) {
+        throw "缺少 vendor\compress_bc7e_original.dll，且未自动检测到 Unity 安装目录（可用 -UnityDir 参数指定 Editor 目录）"
+    }
+    Copy-Item -LiteralPath $srcDll -Destination $origDll -Force
+    Write-Host "Restored original DLL copy from: $srcDll"
 }
 
 # 找一个带 VC 工具链的 Visual Studio / Build Tools 实例

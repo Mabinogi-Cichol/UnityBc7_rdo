@@ -1,7 +1,9 @@
 // compress_bc7e_rdo.cpp
 // 兼容 Unity compress_bc7e.dll 的壳 DLL：
-//   - 默认把全部调用转发给项目内的原始 DLL 副本（输出逐字节一致）；
-//   - 可通过环境变量/配置文件开启 RDO 后处理（bc7enc_rdo 的 ERT），
+//   - 默认把全部调用转发给项目内的原始 DLL 副本（输出逐字节一致）。
+//     原 DLL 副本必须与壳 DLL 同目录：替换脚本会把 Unity 原 DLL 改名为
+//     compress_bc7e_original.dll 放入同目录；
+//   - 可通过配置文件开启 RDO 后处理（bc7enc_rdo 的 ERT），
 //     在 BC7 块流上做率失真优化，使后续 LZ 压缩体积更小。
 //
 // 本 DLL 不会读取或修改 Unity 安装目录中的任何文件。
@@ -68,24 +70,10 @@ std::wstring get_module_directory()
 
 bool resolve_original_dll_path(std::wstring& out_path)
 {
-    // 1) 环境变量显式指定
-    wchar_t env_path[MAX_PATH * 4] = {};
-    DWORD env_len = GetEnvironmentVariableW(L"BC7E_ORIGINAL_DLL", env_path,
-                                             (DWORD)_countof(env_path));
-    if (env_len && env_len < _countof(env_path))
-    {
-        out_path = env_path;
-        return true;
-    }
-
-    // 2) 与本 DLL 同目录下的原始副本
+    // 与本 DLL 同目录下的原始副本（替换脚本会把 Unity 原 DLL 改名为
+    // compress_bc7e_original.dll 放入同目录）
     std::wstring dir = get_module_directory();
     out_path = dir + L"\\compress_bc7e_original.dll";
-    if (GetFileAttributesW(out_path.c_str()) != INVALID_FILE_ATTRIBUTES)
-        return true;
-
-    // 3) 当前工作目录下的原始副本
-    out_path = L"compress_bc7e_original.dll";
     if (GetFileAttributesW(out_path.c_str()) != INVALID_FILE_ATTRIBUTES)
         return true;
 
@@ -99,8 +87,7 @@ void load_original_once()
     if (!resolve_original_dll_path(path))
     {
         snprintf(g_orig_error, sizeof(g_orig_error),
-                 "compress_bc7e_original.dll not found (set BC7E_ORIGINAL_DLL or place "
-                 "the copy next to this DLL)");
+                 "compress_bc7e_original.dll not found next to this DLL");
         return;
     }
 
@@ -148,7 +135,7 @@ const original_api& original()
 }
 
 // ---------------------------------------------------------------------------
-// RDO 配置（环境变量优先，配置文件兜底）
+// RDO 配置（仅读取与壳 DLL 同目录的 bc7_rdo_config.txt，文件修改后自动重读）
 // ---------------------------------------------------------------------------
 
 struct rdo_config
@@ -163,14 +150,7 @@ struct rdo_config
 
 std::wstring get_config_path()
 {
-    // 优先使用 BC7_RDO_CONFIG 指向的项目内配置文件
-    wchar_t env_path[MAX_PATH * 4] = {};
-    DWORD env_len = GetEnvironmentVariableW(L"BC7_RDO_CONFIG", env_path,
-                                             (DWORD)_countof(env_path));
-    if (env_len && env_len < _countof(env_path))
-        return env_path;
-
-    // 默认与本 DLL 同目录
+    // 与本 DLL 同目录下的配置文件
     return get_module_directory() + L"\\bc7_rdo_config.txt";
 }
 
@@ -242,34 +222,6 @@ const rdo_config& config()
     return cached;
 }
 
-float get_env_float(const char* name, float fallback)
-{
-    char buf[64] = {};
-    DWORD n = GetEnvironmentVariableA(name, buf, (DWORD)sizeof(buf));
-    return (n && n < sizeof(buf)) ? (float)atof(buf) : fallback;
-}
-
-uint32_t get_env_uint(const char* name, uint32_t fallback)
-{
-    char buf[64] = {};
-    DWORD n = GetEnvironmentVariableA(name, buf, (DWORD)sizeof(buf));
-    return (n && n < sizeof(buf)) ? (uint32_t)strtoul(buf, nullptr, 10) : fallback;
-}
-
-bool get_env_bool(const char* name, bool fallback)
-{
-    char buf[64] = {};
-    DWORD n = GetEnvironmentVariableA(name, buf, (DWORD)sizeof(buf));
-    if (!n || n >= sizeof(buf))
-        return fallback;
-    int v = atoi(buf);
-    if (v)
-        return true;
-    if (!_stricmp(buf, "true") || !_stricmp(buf, "yes") || !_stricmp(buf, "on"))
-        return true;
-    return false;
-}
-
 bool unpack_bc7_callback(const void* pBlock, ert::color_rgba* pPixels,
                          uint32_t /*block_index*/, void* /*pUserData*/)
 {
@@ -280,18 +232,17 @@ bool unpack_bc7_callback(const void* pBlock, ert::color_rgba* pPixels,
 void apply_rdo(uint32_t num_blocks, uint64_t* pBlocks, const uint32_t* pPixelsRGBA)
 {
     const rdo_config& cfg = config();
-    float lambda = get_env_float("BC7_RDO_LAMBDA", cfg.lambda);
+    float lambda = cfg.lambda;
     if (lambda <= 0.0f || !num_blocks)
         return;
 
     ert::reduce_entropy_params ep;
     ep.m_lambda = lambda;
-    ep.m_lookback_window_size = get_env_uint("BC7_RDO_LOOKBACK", cfg.lookback);
-    ep.m_smooth_block_max_mse_scale = get_env_float("BC7_RDO_SMOOTH_SCALE", cfg.smooth_scale);
-    ep.m_max_allowed_rms_increase_ratio =
-        get_env_float("BC7_RDO_MAX_RMS_INCREASE_RATIO", cfg.max_rms_increase_ratio);
-    ep.m_try_two_matches = get_env_bool("BC7_RDO_TWO_MATCHES", cfg.two_matches);
-    ep.m_debug_output = get_env_bool("BC7_RDO_DEBUG", cfg.debug);
+    ep.m_lookback_window_size = cfg.lookback;
+    ep.m_smooth_block_max_mse_scale = cfg.smooth_scale;
+    ep.m_max_allowed_rms_increase_ratio = cfg.max_rms_increase_ratio;
+    ep.m_try_two_matches = cfg.two_matches;
+    ep.m_debug_output = cfg.debug;
 
     uint32_t modified = 0;
     ert::reduce_entropy(
