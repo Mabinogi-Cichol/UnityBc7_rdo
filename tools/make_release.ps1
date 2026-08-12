@@ -102,8 +102,82 @@ if (Test-Path -LiteralPath $zip) {
 }
 Compress-Archive -Path (Join-Path $releaseDir "*") -DestinationPath $zip -CompressionLevel Optimal
 
+# ---------------------------------------------------------------------------
+# 5. 注入版（外挂形式）发布包：bc7rdo_injector + bc7_rdo_hook + 配置
+# ---------------------------------------------------------------------------
+$injectorDir = Join-Path $root "release\$Version-injector"
+if (Test-Path -LiteralPath $injectorDir) {
+    Remove-Item -LiteralPath $injectorDir -Recurse -Force
+}
+New-Item -ItemType Directory -Force -Path $injectorDir | Out-Null
+
+Copy-Item -LiteralPath (Join-Path $out "bc7rdo_injector.exe") -Destination $injectorDir -Force
+Copy-Item -LiteralPath (Join-Path $out "bc7_rdo_hook.dll") -Destination $injectorDir -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "..\bc7_rdo_config.txt") -Destination (Join-Path $injectorDir "bc7_rdo_config.txt") -Force
+
+$injectorReadme = @"
+bc7rdo_injector $Version - Unity BC7 RDO 注入版（外挂形式，不改安装目录）
+========================================================================
+
+文件说明
+--------
+- bc7rdo_injector.exe  注入器：启动/附加 Unity Editor 并把 hook DLL 注入进程
+- bc7_rdo_hook.dll     载荷：对 compress_bc7e.dll 的 bc7elib_compress_blocks
+                       导出桩做 inline detour + RDO 后处理
+- bc7_rdo_config.txt   配置（lambda 等），与本目录 hook DLL 同目录，热更新
+
+使用方法（Unity 安装目录零写入，无需管理员）
+--------------------------------------------
+1. 把三个文件解压到任意目录（三个文件须在同一目录）。
+2. 自动检测最新 Unity 2022.3.x 并启动 + 注入：
+   bc7rdo_injector.exe
+   指定 Unity 并传参（其余参数原样传给 Unity）：
+   bc7rdo_injector.exe -u "C:\Program Files\Unity\Hub\Editor\2022.3.62f1\Editor\Unity.exe" -- -projectPath D:\proj
+   附加到已运行的 Unity：
+   bc7rdo_injector.exe -p <PID>
+   枚举本机 Unity 安装：
+   bc7rdo_injector.exe -list
+3. 日志：本目录 bc7_rdo_hook.log（装钩成功/失败诊断）。
+
+退出码：0 成功；1 用法错误；2 未找到 Unity；3 进程操作失败；
+4 注入失败（含 hook DLL 缺失）；5 注入超时。
+
+配置
+----
+bc7_rdo_config.txt 修改后自动生效：
+lambda=1.0                  RDO 强度，0=关闭；建议 0.25~4.0（默认 1.0）
+lookback=128                回看窗口字节数
+smooth_scale=15             平滑块误差放大系数
+max_rms_increase_ratio=10   允许 RMS 最大增幅
+two_matches=1               是否尝试两个匹配
+debug=0                     调试输出（1 时记录每次 RDO 调用）
+
+注意
+----
+- 仅拦截 bc7elib_compress_blocks（压缩调用）；装钩前已完成的压缩无 RDO。
+- 仅 x64 Unity Editor；个别安全软件可能拦截远程注入（本地 mod 用途）。
+- 使用前请评估 Unity EULA 与版本兼容风险；仅作实验用途。
+- 详细方案评估与架构见仓库 docs/INJECTION.md。
+"@
+Set-Content -LiteralPath (Join-Path $injectorDir "README-injector.txt") -Value $injectorReadme -Encoding utf8
+
+$files2 = Get-ChildItem -LiteralPath $injectorDir -File | Sort-Object Name
+$lines2 = foreach ($f in $files2) {
+    $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $f.FullName).Hash
+    "{0}  {1}" -f $hash, $f.Name
+}
+Set-Content -LiteralPath (Join-Path $injectorDir "SHA256SUMS.txt") -Value $lines2 -Encoding ascii
+
+$zip2 = Join-Path $root "release\compress_bc7e_rdo-injector-$Version-win-x64.zip"
+if (Test-Path -LiteralPath $zip2) {
+    Remove-Item -LiteralPath $zip2 -Force
+}
+Compress-Archive -Path (Join-Path $injectorDir "*") -DestinationPath $zip2 -CompressionLevel Optimal
+
 Write-Host ""
 Write-Host "Release 目录: $releaseDir"
 Write-Host "Release 压缩包: $zip"
+Write-Host "注入版目录: $injectorDir"
+Write-Host "注入版压缩包: $zip2"
 Write-Host ""
 Get-Content -LiteralPath (Join-Path $releaseDir "SHA256SUMS.txt")

@@ -114,6 +114,33 @@ python tests\test_compat.py
 
 详见 [docs/USING_WITH_UNITY.md](docs/USING_WITH_UNITY.md)。
 
+## 注入版（外挂形式，不修改安装目录）
+
+不想动 Unity 安装目录？仓库提供两种注入形式，效果相同（Unity 安装目录零写入）：
+
+1. **Editor Plugin（推荐）**：把构建产出的 `out\editor-plugin\Bc7Rdo\` 整个
+   目录复制到工程 `Assets` 下任意位置（含 C# 脚本 + `Bc7Rdo.Editor.asmdef`
+   + hook DLL + 配置），打开工程即自动加载 hook DLL 并注入 RDO——无需
+   注入器、无需管理员。asmdef 将脚本编入 Editor-only 程序集（自动引用
+   UnityEditor），放 `Assets\Plugins` 下也不会编译报错；hook DLL 会被自动
+   设为仅编辑器平台，不会打进玩家包；并行导入的 AssetImportWorker 进程
+   会被自动监控并注入，批量 reimport 同样生效。
+2. **注入器 exe**：外挂目录放三个文件（`bc7rdo_injector.exe`、
+   `bc7_rdo_hook.dll`、`bc7_rdo_config.txt`），启动/附加 Unity 后远程注入。
+
+两种形式都复用同一个原生 hook DLL：对 `bc7elib_compress_blocks` 导出桩做
+inline detour，实现转发 + RDO 后处理。注入器用法：
+
+```powershell
+bc7rdo_injector.exe                              # 自动检测最新 2022.3.x 并启动+注入
+bc7rdo_injector.exe -u "…\Editor\Unity.exe" -- -projectPath D:\proj
+bc7rdo_injector.exe -p <PID>                     # 附加已运行的 Unity
+bc7rdo_injector.exe -list                        # 枚举本机 Unity 安装
+```
+
+方案评估（DLL 劫持 vs Shellcode 注入 vs 落地选型）、架构、使用与测试详见
+[docs/INJECTION.md](docs/INJECTION.md)。
+
 ## 实测结果（photo 256×256，basic，perceptual）
 
 | λ | zlib9 体积 | 相比基线 | PSNR | 改变块比例 |
