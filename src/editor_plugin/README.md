@@ -1,6 +1,6 @@
 # BC7 RDO Unity Editor Plugin（外挂注入版）
 
-把 BC7 RDO 注入到 Unity Editor 进程，无需修改 Unity 安装目录、无需注入器 exe。
+把 BC7 RDO 注入到 Unity Editor 进程，无需修改 Unity 安装目录。
 
 ## 用法
 
@@ -13,7 +13,7 @@
      CS0246 编译错误
    - `bc7_rdo_hook.dll`        原生 hook DLL（inline detour + ERT RDO 后处理）
    - `bc7_rdo_config.txt`      RDO 配置
-2. 重启 / 重新打开工程即自动生效。无需注入器、无需管理员权限。
+2. 重启 / 重新打开工程即自动生效。无需管理员权限。
 3. 打包安全：`hook_loader.cs` 内置 AssetPostprocessor，首次导入时自动把
    `bc7_rdo_hook.dll` 的插件导入器设为**仅编辑器平台**，不会打进玩家包。
 

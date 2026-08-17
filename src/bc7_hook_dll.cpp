@@ -1,8 +1,10 @@
 // bc7_hook_dll.cpp
-// 注入版 BC7 RDO：
+// 外挂版 BC7 RDO（Editor Plugin 载荷）：
 //   - 不替换、不修改 Unity 安装目录中的任何文件；
-//   - 由注入器（bc7rdo_injector.exe）注入 Unity Editor 进程，对本进程内已
-//     加载的 compress_bc7e.dll 的 bc7elib_compress_blocks 导出桩做 5 字节
+//   - 由 Editor Plugin 的 hook_loader.cs 在编辑器域加载时 LoadLibraryW 加载进
+//     主编辑器进程；并行导入的 AssetImportWorker 子进程由插件用
+//     CreateRemoteThread + LoadLibraryW 注入。对本进程内已加载的
+//     compress_bc7e.dll 的 bc7elib_compress_blocks 导出桩做 5 字节
 //     E9 inline detour，跳转到本 DLL 内分配的跳板，跳板再做绝对跳转进入本
 //     DLL 的 hook 函数；
 //   - hook 函数调用原始实现后做与壳 DLL 完全一致的 ERT RDO 后处理（配置

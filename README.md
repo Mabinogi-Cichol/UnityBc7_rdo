@@ -53,22 +53,33 @@ powershell -ExecutionPolicy Bypass -File tools\build.ps1
 powershell -ExecutionPolicy Bypass -File tools\make_release.ps1 -Version v0.1.0
 ```
 
-脚本先构建 DLL，再生成 `release\v0.1.0\` 目录与
-`release\compress_bc7e_rdo-v0.1.0-win-x64.zip` 压缩包（含壳 DLL、安装/回滚脚本、
-配置示例、README、导出表与 SHA256SUMS）。
+脚本先构建，然后**分别生成两个独立发布包**：
+
+1. **壳 DLL 版**（替换 Unity 目录，需管理员，支持一键回滚）：
+   `release\v0.1.0\` 目录 → `release\compress_bc7e_rdo-v0.1.0-win-x64.zip`
+   （含壳 DLL、安装/回滚脚本、配置示例、README、导出表与 SHA256SUMS）。
+2. **Editor Plugin 版**（放进工程 `Assets` 即生效，无需管理员）：
+   `release\v0.1.0-editor-plugin\` 目录 →
+   `release\compress_bc7e_rdo-editor-plugin-v0.1.0-win-x64.zip`
+   （含 hook_loader.cs、asmdef、hook DLL、配置、README 与 SHA256SUMS）。
 
 打完包后可用 git 标签标记版本：
 
 ```powershell
-git tag -a v0.1.0 -m "Unity BC7 RDO shell DLL v0.1.0"
+git tag -a v0.1.0 -m "Unity BC7 RDO v0.1.0"
 git push origin main --tags
 ```
 
-若要发布到 GitHub Releases（本机无 `gh` CLI 时）：
+若要发布到 GitHub Releases（需安装 `gh` CLI），两个包作为**独立资产**一并附带：
 
 ```powershell
-gh release create v0.1.0 release/compress_bc7e_rdo-v0.1.0-win-x64.zip
+gh release create v0.1.0 `
+  release/compress_bc7e_rdo-v0.1.0-win-x64.zip `
+  release/compress_bc7e_rdo-editor-plugin-v0.1.0-win-x64.zip
 ```
+
+Release Notes 应分别说明两个包的用法：壳 DLL 版运行 `enable_unity_rdo.ps1`
+替换/回滚；Plugin 版把目录复制进工程 `Assets` 即生效。
 
 ## 测试
 
@@ -114,31 +125,24 @@ python tests\test_compat.py
 
 详见 [docs/USING_WITH_UNITY.md](docs/USING_WITH_UNITY.md)。
 
-## 注入版（外挂形式，不修改安装目录）
+## 外挂形式（Editor Plugin，不修改安装目录）
 
-不想动 Unity 安装目录？仓库提供两种注入形式，效果相同（Unity 安装目录零写入）：
+不想动 Unity 安装目录？仓库提供 **Editor Plugin** 形式，效果与替换版相同
+（Unity 安装目录零写入、无需管理员）：
 
-1. **Editor Plugin（推荐）**：把构建产出的 `out\editor-plugin\Bc7Rdo\` 整个
-   目录复制到工程 `Assets` 下任意位置（含 C# 脚本 + `Bc7Rdo.Editor.asmdef`
-   + hook DLL + 配置），打开工程即自动加载 hook DLL 并注入 RDO——无需
-   注入器、无需管理员。asmdef 将脚本编入 Editor-only 程序集（自动引用
-   UnityEditor），放 `Assets\Plugins` 下也不会编译报错；hook DLL 会被自动
-   设为仅编辑器平台，不会打进玩家包；并行导入的 AssetImportWorker 进程
-   会被自动监控并注入，批量 reimport 同样生效。
-2. **注入器 exe**：外挂目录放三个文件（`bc7rdo_injector.exe`、
-   `bc7_rdo_hook.dll`、`bc7_rdo_config.txt`），启动/附加 Unity 后远程注入。
+1. 把 release 的 editor-plugin 包（或构建产物 `out\editor-plugin\Bc7Rdo\`）
+   整个目录复制到工程 `Assets` 下任意位置（含 C# 脚本 +
+   `Bc7Rdo.Editor.asmdef` + hook DLL + 配置）；
+2. 打开/刷新工程即自动生效：加载 hook DLL → 自动装钩 → RDO，无需管理员；
+   asmdef 将脚本编入 Editor-only 程序集（自动引用 UnityEditor），放
+   `Assets\Plugins` 下也不会编译报错；hook DLL 会被自动设为仅编辑器平台，
+   不会打进玩家包；
+3. 并行导入的 AssetImportWorker 子进程会被自动监控并注入，批量 reimport
+   同样生效。
 
-两种形式都复用同一个原生 hook DLL：对 `bc7elib_compress_blocks` 导出桩做
-inline detour，实现转发 + RDO 后处理。注入器用法：
-
-```powershell
-bc7rdo_injector.exe                              # 自动检测最新 2022.3.x 并启动+注入
-bc7rdo_injector.exe -u "…\Editor\Unity.exe" -- -projectPath D:\proj
-bc7rdo_injector.exe -p <PID>                     # 附加已运行的 Unity
-bc7rdo_injector.exe -list                        # 枚举本机 Unity 安装
-```
-
-方案评估（DLL 劫持 vs Shellcode 注入 vs 落地选型）、架构、使用与测试详见
+配置 `bc7_rdo_config.txt` 与插件同目录热更新；菜单
+`Tools/BC7 RDO/Reload Hook DLL`、`Smoke Test` 可手动重载/冒烟；卸载 =
+删除该目录。方案评估与细节见
 [docs/INJECTION.md](docs/INJECTION.md)。
 
 ## 实测结果（photo 256×256，basic，perceptual）

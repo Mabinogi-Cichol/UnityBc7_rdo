@@ -24,6 +24,13 @@
 powershell -ExecutionPolicy Bypass -File tools\build.ps1
 ```
 
+构建完成后，可直接从源码树运行安装脚本（脚本会自动从 `out\` 找到壳 DLL，
+无需手动复制）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\enable_unity_rdo.ps1
+```
+
 脚本完成以下步骤：
 
 1. 用 `vswhere` 自动查找带 VC 工具链的 Visual Studio 实例，并定位 `vcvars64.bat`；
@@ -92,3 +99,15 @@ powershell -ExecutionPolicy Bypass -File tools\make_release.ps1 -Version v0.1.0
 - `SHA256SUMS.txt`
 
 并打包为 `release\compress_bc7e_rdo-v0.1.0-win-x64.zip`。
+
+脚本同时生成 Editor Plugin 发布包 `release\v0.1.0-editor-plugin\`
+（`hook_loader.cs`、`Bc7Rdo.Editor.asmdef`、`bc7_rdo_hook.dll`、
+`bc7_rdo_config.txt`、`README-editor-plugin.txt`、`SHA256SUMS.txt`），
+打包为 `release\compress_bc7e_rdo-editor-plugin-v0.1.0-win-x64.zip`。
+整个目录放进工程 `Assets` 下即生效（打开工程自动加载 hook DLL 并装钩）。
+
+发布到 GitHub Releases 时，两个 zip 作为独立资产一并附带：
+
+```powershell
+gh release create v0.1.0 release/compress_bc7e_rdo-v0.1.0-win-x64.zip release/compress_bc7e_rdo-editor-plugin-v0.1.0-win-x64.zip
+```
