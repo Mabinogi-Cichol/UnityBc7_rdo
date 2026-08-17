@@ -1,7 +1,8 @@
 param(
     [string]$UnityDir = "",   # 手动指定 Unity Editor 目录（跳过自动检测）
     [float]$Lambda = 1.0,     # 默认 RDO lambda
-    [switch]$StatusOnly       # 只显示状态，不进入菜单
+    [switch]$StatusOnly,      # 只显示状态，不进入菜单
+    [string]$ShellDll = ""    # 手动指定壳 DLL 路径（默认按 脚本同目录 -> out\ 自动查找）
 )
 
 $ErrorActionPreference = "Stop"
@@ -9,8 +10,21 @@ $ErrorActionPreference = "Stop"
 # 引入共享检测模块（Find-UnityEditorDirs）
 . (Join-Path $PSScriptRoot "unity_dirs.ps1")
 
-# 自包含定位：壳 DLL 与脚本同一目录（release 包布局）
-$shellDll = Join-Path $PSScriptRoot "compress_bc7e.dll"
+# 壳 DLL 定位（按优先级）：
+#   1. -ShellDll 参数显式指定；
+#   2. 脚本同目录（release 包布局）；
+#   3. 仓库 out\ 目录（源码树开发布局：tools\build.ps1 的构建产物）。
+function Resolve-ShellDll {
+    $candidates = @()
+    if ($ShellDll) { $candidates += $ShellDll }
+    $candidates += (Join-Path $PSScriptRoot "compress_bc7e.dll")
+    $candidates += (Join-Path (Split-Path -Parent $PSScriptRoot) "out\compress_bc7e.dll")
+    foreach ($c in $candidates) {
+        if (Test-Path -LiteralPath $c) { return $c }
+    }
+    return $null
+}
+$shellDll = Resolve-ShellDll
 
 # ---------- 辅助函数 ----------
 
@@ -272,9 +286,11 @@ function Invoke-Replace([string]$target) {
 
     # 3. 检查壳 DLL 存在
     if (-not $shellHash) {
-        Write-Host "未找到壳 DLL: $shellDll。请将本脚本与 compress_bc7e.dll 放在同一目录。"
+        Write-Host "未找到壳 DLL（查找顺序：脚本同目录 -> 仓库 out\ -> -ShellDll 参数）。"
+        Write-Host "请先运行 tools\build.ps1 构建，或把 compress_bc7e.dll 与本脚本放在同一目录，或用 -ShellDll 参数指定。"
         return
     }
+    Write-Host "壳 DLL 来源 : $shellDll（SHA256 前16位 $($shellHash.Substring(0,16))）"
 
     # 4. 权限 / Unity 运行状态 / 最终确认
     if (-not (Test-Admin)) {
@@ -383,9 +399,11 @@ function Invoke-Update([string]$target) {
         return
     }
     if (-not (Get-Sha256 $shellDll)) {
-        Write-Host "未找到壳 DLL: $shellDll。请将本脚本与 compress_bc7e.dll 放在同一目录。"
+        Write-Host "未找到壳 DLL（查找顺序：脚本同目录 -> 仓库 out\ -> -ShellDll 参数）。"
+        Write-Host "请先运行 tools\build.ps1 构建，或把 compress_bc7e.dll 与本脚本放在同一目录，或用 -ShellDll 参数指定。"
         return
     }
+    Write-Host "壳 DLL 来源 : $shellDll"
     if (-not (Test-Admin)) {
         Write-Host "需要管理员权限，请以管理员身份运行本脚本。"
         return
@@ -496,6 +514,9 @@ if (-not (Test-Admin)) {
         if ($UnityDir) {
             $argList += '-UnityDir', "`"$UnityDir`""
         }
+        if ($ShellDll) {
+            $argList += '-ShellDll', "`"$ShellDll`""
+        }
         $argList += '-Lambda', "`"$Lambda`""
         Start-Process -FilePath (Get-Process -Id $PID).Path -Verb RunAs -ArgumentList $argList
         exit
@@ -505,6 +526,14 @@ if (-not (Test-Admin)) {
 
 # 3. 选择目标 Unity 目录
 $target = Select-UnityDir
+
+# 3.5 显示壳 DLL 来源（构建产物在 out\，缺失时提示构建）
+if ($shellDll) {
+    Write-Host "壳 DLL 来源 : $shellDll"
+} else {
+    Write-Host "警告：未找到壳 DLL（查找顺序：脚本同目录 -> 仓库 out\ -> -ShellDll 参数）。"
+    Write-Host "      替换/更新前请先运行 tools\build.ps1 构建，或用 -ShellDll 参数指定。"
+}
 
 # 4. 菜单循环（按状态路由）
 while ($true) {

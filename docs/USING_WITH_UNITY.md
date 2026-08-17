@@ -24,6 +24,19 @@ powershell -ExecutionPolicy Bypass -File enable_unity_rdo.ps1
 脚本自动检测 Unity 安装目录（`C:\Program Files\Unity` 下直接安装与
 `Hub\Editor` 两种布局）；安装多个 Unity 版本时按编号选择。
 
+### 从源码树直接使用（开发流程）
+
+也可以不经 release 包，构建后直接运行仓库里的脚本：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\build.ps1     # 产出 out\compress_bc7e.dll
+powershell -ExecutionPolicy Bypass -File tools\enable_unity_rdo.ps1
+```
+
+脚本按以下顺序查找壳 DLL：**脚本同目录**（release 包布局）→ **仓库 `out\`**
+（`build.ps1` 构建产物）→ `-ShellDll` 参数显式指定。运行前请确保已构建，
+否则菜单会提示先运行 `tools\build.ps1`。
+
 在菜单中选择 **"替换"**，按提示输入 lambda（默认 1.0），脚本自动完成：
 
 1. 把 Unity Editor 目录中的原版 `compress_bc7e.dll` 改名为
@@ -59,6 +72,12 @@ powershell -ExecutionPolicy Bypass -File enable_unity_rdo.ps1 -StatusOnly
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File enable_unity_rdo.ps1 -UnityDir "C:\Program Files\Unity\Unity 2022.3.62f1\Editor"
+```
+
+自动查找壳 DLL 失败时可用 `-ShellDll` 显式指定壳 DLL 路径：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File enable_unity_rdo.ps1 -ShellDll "D:\...\out\compress_bc7e.dll"
 ```
 
 脚本依赖同目录的 `unity_dirs.ps1`（共享的 Unity 安装目录检测模块），请勿删除或单独移动。
