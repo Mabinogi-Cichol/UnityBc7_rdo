@@ -29,6 +29,7 @@
 
 #include "bc7elib.h"
 #include "rdo_common.h"
+#include "oodle_hook.h"
 
 namespace
 {
@@ -250,7 +251,40 @@ extern "C" void bc7elib_compress_blocks_hook(
     uint32_t num_blocks, uint64_t* pBlocks, const uint32_t* pPixelsRGBA,
     const bc7e_compress_block_params* pComp_params)
 {
+    // 配置在本函数顶部读取一次（含 debug 日志用），热重载由 watched_config 负责
+    const rdo::rdo_config& cfg = rdo::watched_config(
+        rdo::config_path_in_module_dir((LPCVOID)&install_hook));
+
     const pfn_compress_blocks real = g_real;
+
+    if (cfg.use_oodle)
+    {
+        // ---- Oodle 编码器路径：不调用原 bc7e，不做 ERT 后处理 ----
+        // oodle_lambda 独立于 ERT 的 lambda（不做换算），由配置直接给出 0..100
+        const int l = cfg.oodle_lambda;
+
+        if (oodle_hook::available() &&
+            oodle_hook::encode_bc7_rdo(num_blocks, pBlocks, pPixelsRGBA, l,
+                                       cfg.oodle_effort))
+        {
+            if (cfg.debug)
+                hook_log("RDO called (oodle) lambda=%d effort=%d num_blocks=%u "
+                         "pBlocks=0x%p",
+                         l, cfg.oodle_effort, num_blocks, (void*)pBlocks);
+            return;
+        }
+
+        // Oodle 不可用或编码失败：警告一次（仅一次），然后落到下方默认路径，
+        // 按 encoder=bc7enc_rdo 的方式继续——调用原 bc7e 压缩后接
+        // rdo::apply_rdo（ERT 后处理），而不是降级为无 RDO 的普通 bc7e。
+        static std::once_flag g_oodle_fallback_once;
+        std::call_once(g_oodle_fallback_once, []() {
+            hook_log("oodle: 编码器不可用/编码失败，本次及后续调用回退默认 "
+                     "bc7enc_rdo/ERT RDO 路径（bc7e 压缩 + ERT RDO 后处理）");
+        });
+    }
+
+    // ---- 默认 bc7enc_rdo 路径（行为与重构前逐字节一致）----
     if (real)
         real(num_blocks, pBlocks, pPixelsRGBA, pComp_params);
     else
@@ -262,8 +296,6 @@ extern "C" void bc7elib_compress_blocks_hook(
     // 附带 num_blocks 与 pBlocks 地址：用于分析 Unity 的调用批划分
     //（ERT 的 lookback 参考依赖批内连续性，批划分不同输出就不同，
     //  这会让 Unity 的 ConsistencyChecker 报 inconsistent result）
-    const rdo::rdo_config& cfg = rdo::watched_config(
-        rdo::config_path_in_module_dir((LPCVOID)&install_hook));
     if (cfg.debug)
         hook_log("RDO called lambda=%f num_blocks=%u pBlocks=0x%p",
                  (double)cfg.lambda, num_blocks, (void*)pBlocks);

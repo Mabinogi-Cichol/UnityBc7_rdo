@@ -12,6 +12,8 @@ $out  = Join-Path $root "out"
 $srcDir = Join-Path $root "src"
 $vendor = Join-Path $root "vendor"
 $rdo    = Join-Path $vendor "bc7enc_rdo"
+$testenvInclude = Join-Path $root "oodle_testenv\include"
+$testenvBin     = Join-Path $root "oodle_testenv\bin"
 
 New-Item -ItemType Directory -Force -Path $out | Out-Null
 
@@ -90,12 +92,13 @@ if ($LASTEXITCODE -ne 0) {
 # hook DLL：注入 Unity 进程后对 compress_bc7e.dll 导出桩做 inline detour + RDO
 $hookSources = @(
     (Join-Path $srcDir "bc7_hook_dll.cpp"),
+    (Join-Path $srcDir "oodle_hook.cpp"),
     (Join-Path $rdo "ert.cpp"),
     (Join-Path $rdo "bc7decomp.cpp")
 ) -join " "
 
 Write-Host "Building bc7_rdo_hook.dll ..."
-$clHook = "call `"$vcvars`" >nul 2>&1 && cl /nologo /O2 /EHsc /std:c++17 /utf-8 /MT /DNOMINMAX /D_CRT_SECURE_NO_WARNINGS /I `"$include`" /I `"$srcDir`" /LD /Fo$out\ $hookSources /Fe:`"$out\bc7_rdo_hook.dll`" /link /NOLOGO"
+$clHook = "call `"$vcvars`" >nul 2>&1 && cl /nologo /O2 /EHsc /std:c++17 /utf-8 /MT /DNOMINMAX /D_CRT_SECURE_NO_WARNINGS /I `"$include`" /I `"$srcDir`" /I `"$testenvInclude`" /LD /Fo$out\ $hookSources /Fe:`"$out\bc7_rdo_hook.dll`" /link /NOLOGO"
 cmd /c $clHook
 if ($LASTEXITCODE -ne 0) {
     throw "hook DLL build failed with exit code $LASTEXITCODE"
@@ -135,6 +138,26 @@ Copy-Item -LiteralPath (Join-Path $pluginSrcDir "Bc7Rdo.Editor.asmdef") -Destina
 Copy-Item -LiteralPath (Join-Path $out "bc7_rdo_hook.dll") -Destination $pluginOutDir -Force
 Copy-Item -LiteralPath (Join-Path $root "bc7_rdo_config.txt") -Destination $pluginOutDir -Force
 Copy-Item -LiteralPath (Join-Path $pluginSrcDir "README.md") -Destination (Join-Path $out "editor-plugin") -Force
+
+# ---- Oodle Texture 编码器 DLL（Epic 专有，仅本地暂存，绝不进 release）----
+# 这两个 DLL 是 Epic 专有二进制：不随仓库分发（oodle_testenv\.gitignore 已忽略
+# bin/），也永远不会被打进 release 包（见 tools\make_release.ps1）。仅当开发者
+# 手动把两份 DLL 放进 oodle_testenv\bin\ 时，本地构建才会把它们暂存到
+# out\editor-plugin\Bc7Rdo\ 供本地测试/安装；release 发布包用户需自行从 Oodle SDK
+# 获取并手动拷贝进插件目录（见 src\editor_plugin\README.md）。
+$oodleDlls = @("oo2tex_win64_2.9.16.dll", "oo2texrt_win64_2.9.16.dll")
+foreach ($dll in $oodleDlls) {
+    $src = Join-Path $testenvBin $dll
+    if (Test-Path -LiteralPath $src) {
+        Copy-Item -LiteralPath $src -Destination $pluginOutDir -Force
+        Write-Host "Staged (local-only): $dll -> out\editor-plugin\Bc7Rdo\"
+    } else {
+        Write-Host "WARNING: $dll 不存在于 oodle_testenv\bin\——未暂存到本地输出（仅本地测试用）。"
+        Write-Host "         Oodle DLL 是 Epic 专有，release 包本就不包含，需从 Oodle SDK 手动获取；"
+        Write-Host "         运行时若 encoder=oodle 而 DLL 缺失，hook 会自动回退默认"
+        Write-Host "         bc7enc_rdo/ERT RDO 路径，不会降级为无 RDO 的普通 bc7e。"
+    }
+}
 
 Write-Host ""
 Write-Host "Editor plugin staged: out\editor-plugin\Bc7Rdo\（复制到工程 Assets 下即可）"

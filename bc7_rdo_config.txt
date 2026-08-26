@@ -1,6 +1,9 @@
-﻿lambda=1
+encoder=bc7enc_rdo
+lambda=1
 lookback=128
 smooth_scale=15
 max_rms_increase_ratio=10
 two_matches=1
+oodle_effort=high
+oodle_lambda=30
 debug=0

@@ -262,3 +262,31 @@ Bc7Rdo.HookLoader.SmokeTest` 后断言：退出码 0、unity.log 出现
   `Install()`，幂等无副作用；
 - **卸载**：hook 常驻至 Unity 退出，无卸载机制（外挂生命周期即 Unity 生命周期）；
 - 与替换版相同：请自行评估 Unity EULA 与版本兼容风险，仅作实验用途。
+
+### 7.1 编码器切换（bc7enc_rdo / Oodle Texture）
+
+插件目录 `bc7_rdo_config.txt` 新增 `encoder` 开关，可在两种编码器之间切换：
+
+- **`encoder=bc7enc_rdo`（默认）**：既有路径——bc7e 压缩后接 ERT RDO
+  后处理，全部逻辑开源随包分发；
+- **`encoder=oodle`**：hook 改用 Oodle Texture RDO 做**完整 RDO 编码**
+  （跳过 bc7e+ERT）。RDO 强度由独立的 `oodle_lambda`（整数 0..100，默认
+  30）给出，与 ERT 的 `lambda` 互不换算；`oodle_effort=low|normal|high`
+  （默认 `high`）调节耗时。ERT 专用键
+   `lambda`/`lookback`/`smooth_scale`/`max_rms_increase_ratio`/`two_matches`
+   被忽略。需要插件目录存在两个 Epic 专有 DLL：
+   `oo2tex_win64_2.9.16.dll` 与 `oo2texrt_win64_2.9.16.dll`（已 gitignore，
+   **既不在仓库中，也不在 release 发布包内**）。获取方式二选一：本地构建
+   前手动拷入 `oodle_testenv\bin\`（`tools\build.ps1` 会暂存到
+   `out\editor-plugin\Bc7Rdo\`），或 release 包解压并复制进工程后直接拷入
+   插件目录。两编码器档位对照参考
+   [docs/OODLE_LAMBDA_COMPARISON.md](OODLE_LAMBDA_COMPARISON.md)。
+- **已知 batching 限制同样适用于 Oodle**：Oodle RDO 设计上是面向**整张
+  纹理**做率失真优化（UE 中即传整张图），而 hook 只看到 Unity 内部约
+  **64 块/批**的调度切分。因此 UE 式"整图感知"的 RDO 收益在本插件中
+  **无法完全实现**，Oodle 编码器同样只能获得批内 RDO 收益——这与 ERT
+  路径的批划分限制同源，属 hook 形式的固有限制。
+- **优雅降级**：`encoder=oodle` 但 Oodle DLL 缺失或编码失败时，hook
+  自动回退到默认 `bc7enc_rdo`/ERT RDO 路径——调用原 bc7e 压缩后接
+  `rdo::apply_rdo`（ERT 后处理），与 `encoder=bc7enc_rdo` 行为完全一致，
+  而非降级为无 RDO 的普通 bc7e；仅打一次日志提示，不崩溃。

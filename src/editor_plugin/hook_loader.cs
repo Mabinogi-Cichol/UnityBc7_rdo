@@ -6,7 +6,9 @@
 //   （如 Assets\Editor\Bc7Rdo\），目录内包含：
 //     - hook_loader.cs      本脚本（自动加载 hook DLL）
 //     - bc7_rdo_hook.dll    原生 hook DLL（inline detour + ERT RDO 后处理）
-//     - bc7_rdo_config.txt  RDO 配置（同目录热更新）
+//     - oo2tex_win64_2.9.16.dll / oo2texrt_win64_2.9.16.dll
+//                           Oodle Texture 编码器运行库（可选，encoder=oodle 时使用）
+//     - bc7_rdo_config.txt  RDO 配置（同目录热更新；encoder= 可切换 bc7enc_rdo / oodle）
 //   重新打开 / 刷新工程即自动生效，无需注入器、无需管理员权限。
 //
 // 原理：
@@ -344,14 +346,16 @@ namespace Bc7Rdo
             return p;
         }
 
-        // 写 RDO 配置到插件目录（hook DLL 每次调用都会热重读该文件）
+        // 写 RDO 配置到插件目录（hook DLL 每次调用都会热重读该文件）。
+        // 冒烟测试固定用默认编码器 bc7enc_rdo（ERT 路径），不切换 encoder=oodle。
         private static void WriteConfig(float lambda)
         {
             string cfgPath = Path.Combine(_pluginDir, "bc7_rdo_config.txt");
             File.WriteAllText(cfgPath,
+                "encoder=bc7enc_rdo\n" +
                 "lambda=" + lambda.ToString(System.Globalization.CultureInfo.InvariantCulture) +
-                "\nlookback=128\nsmooth_scale=15\nmax_rms_increase_ratio=10\n" +
-                "two_matches=1\ndebug=0\n");
+                "\noodle_effort=high\noodle_lambda=30\nlookback=128\nsmooth_scale=15\n" +
+                "max_rms_increase_ratio=10\ntwo_matches=1\ndebug=0\n");
         }
 
         // 轮询等待装钩：hook 日志出现 "install_hook: OK" 即返回 true
@@ -746,13 +750,26 @@ namespace Bc7Rdo
     }
 
     // -----------------------------------------------------------------------
-    // 资源后处理：自动把 bc7_rdo_hook.dll 的插件导入器限制为"仅编辑器"，
-    // 避免打包时把原生 hook DLL 打进玩家包（也避免非 x64 目标平台报
-    // "plugin incompatible"）。幂等：已设置过则跳过。
+    // 资源后处理：自动把插件原生 DLL（hook 载荷 + Oodle 编码器运行库）的
+    // 插件导入器限制为"仅编辑器"，避免打包时把原生 DLL 打进玩家包（也避免
+    // 非 x64 目标平台报 "plugin incompatible"）。幂等：已设置过则跳过。
     // -----------------------------------------------------------------------
 
     public class HookDllPlatformPostprocessor : AssetPostprocessor
     {
+        // 需要设为"仅编辑器"的原生 DLL：
+        //   - bc7_rdo_hook.dll          hook 载荷（inline detour + RDO）
+        //   - oo2tex_win64_2.9.16.dll    Oodle Texture 主库（编码/解码）
+        //   - oo2texrt_win64_2.9.16.dll  Oodle Texture RT（BC7Prep 解码）
+        // Oodle DLL 是 Epic 专有库，仅在编辑器进程内 LoadLibrary 使用，
+        // 必须确保不随玩家包分发。
+        private static readonly string[] s_editorOnlyDlls =
+        {
+            "bc7_rdo_hook.dll",
+            "oo2tex_win64_2.9.16.dll",
+            "oo2texrt_win64_2.9.16.dll",
+        };
+
         // SaveAndReimport 会再次触发 OnPostprocessAllAssets，用集合防递归
         private static readonly System.Collections.Generic.HashSet<string> s_processed =
             new System.Collections.Generic.HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
@@ -762,7 +779,7 @@ namespace Bc7Rdo
         {
             foreach (string path in importedAssets)
             {
-                if (!path.EndsWith("bc7_rdo_hook.dll", StringComparison.OrdinalIgnoreCase))
+                if (!IsManagedPluginDll(path))
                     continue;
                 if (!s_processed.Add(path))
                     continue;  // 本会话已处理过（防 SaveAndReimport 递归）
@@ -776,8 +793,20 @@ namespace Bc7Rdo
                 imp.SetCompatibleWithAnyPlatform(false);
                 imp.SetCompatibleWithEditor(true);
                 imp.SaveAndReimport();
-                Debug.Log("[Bc7Rdo] bc7_rdo_hook.dll 已设为仅编辑器平台（不会打进玩家包）: " + path);
+                Debug.Log("[Bc7Rdo] " + System.IO.Path.GetFileName(path) +
+                          " 已设为仅编辑器平台（不会打进玩家包）: " + path);
             }
+        }
+
+        // 文件名大小写不敏感匹配插件自有原生 DLL
+        private static bool IsManagedPluginDll(string path)
+        {
+            foreach (string name in s_editorOnlyDlls)
+            {
+                if (path.EndsWith(name, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+            return false;
         }
     }
 }

@@ -117,6 +117,15 @@ Copy-Item -LiteralPath (Join-Path $out "editor-plugin\Bc7Rdo\bc7_rdo_hook.dll") 
 Copy-Item -LiteralPath (Join-Path $out "editor-plugin\Bc7Rdo\bc7_rdo_config.txt") -Destination $pluginDir -Force
 Copy-Item -LiteralPath (Join-Path $out "editor-plugin\README.md") -Destination (Join-Path $pluginDir "README-editor-plugin.txt") -Force
 
+# 安全断言：Editor Plugin 发布包绝不包含任何 Oodle 专有 DLL（Epic 专有，
+# 仅可手动放置于 oodle_testenv\bin\ 供本地暂存，永不进入 release）。正常
+# 流程下 release 目录是全新创建的，不应出现该文件；若出现说明打包流程有
+# 泄漏，直接报错阻止发布。
+$leakedOodle = Get-ChildItem -LiteralPath $pluginDir -File -Filter "oo2tex*.dll" -ErrorAction SilentlyContinue
+if ($leakedOodle) {
+    throw "内部错误：editor-plugin 发布目录意外包含 Oodle DLL：$($leakedOodle.Name)。Oodle DLL 仅本地暂存，禁止打进 release。"
+}
+
 $files3 = Get-ChildItem -LiteralPath $pluginDir -File | Sort-Object Name
 $lines3 = foreach ($f in $files3) {
     $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $f.FullName).Hash

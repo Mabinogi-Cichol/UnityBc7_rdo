@@ -132,18 +132,41 @@ python tests\test_compat.py
 
 1. 把 release 的 editor-plugin 包（或构建产物 `out\editor-plugin\Bc7Rdo\`）
    整个目录复制到工程 `Assets` 下任意位置（含 C# 脚本 +
-   `Bc7Rdo.Editor.asmdef` + hook DLL + 配置）；
+   `Bc7Rdo.Editor.asmdef` + hook DLL + 配置）。**release 包不含任何 Oodle
+   DLL**；`out\editor-plugin\Bc7Rdo\` 本地暂存时可能含（见"编码器切换"）；
 2. 打开/刷新工程即自动生效：加载 hook DLL → 自动装钩 → RDO，无需管理员；
    asmdef 将脚本编入 Editor-only 程序集（自动引用 UnityEditor），放
-   `Assets\Plugins` 下也不会编译报错；hook DLL 会被自动设为仅编辑器平台，
-   不会打进玩家包；
+   `Assets\Plugins` 下也不会编译报错；hook DLL 与 Oodle DLL 会被自动设为
+   仅编辑器平台，不会打进玩家包；
 3. 并行导入的 AssetImportWorker 子进程会被自动监控并注入，批量 reimport
    同样生效。
+
+**编码器切换**：插件默认使用 `bc7enc_rdo`（ERT 后处理，开源、随包分发）。
+在插件目录 `bc7_rdo_config.txt` 中把 `encoder` 改为 `oodle` 即可切换到
+**Oodle Texture RDO**（需把两个 Epic 专有 DLL `oo2tex_win64_2.9.16.dll` 与
+`oo2texrt_win64_2.9.16.dll` 放进插件目录，见下方许可说明）。两种编码器
+使用**各自独立**的 RDO 强度旋钮，互不换算：`lambda`（浮点，ERT）只作用于
+`bc7enc_rdo`；`oodle_lambda`（整数 0..100，默认 30）只作用于 `oodle`；
+`oodle_effort=low|normal|high` 调节 Oodle 耗时。两编码器档位对照参考见
+[docs/OODLE_LAMBDA_COMPARISON.md](docs/OODLE_LAMBDA_COMPARISON.md)
+（λ_ert ≈ λ_oodle×0.0375）。**Oodle 不可用（DLL 缺失或编码失败）时，hook
+自动回退到默认 `bc7enc_rdo` / ERT RDO 路径**——调用原 bc7e 压缩后接 ERT
+后处理，与 `encoder=bc7enc_rdo` 行为完全一致，而非降级为无 RDO 的普通 bc7e。
 
 配置 `bc7_rdo_config.txt` 与插件同目录热更新；菜单
 `Tools/BC7 RDO/Reload Hook DLL`、`Smoke Test` 可手动重载/冒烟；卸载 =
 删除该目录。方案评估与细节见
 [docs/INJECTION.md](docs/INJECTION.md)。
+
+> **Oodle 许可与获取**：`oo2tex*_win64_2.9.16.dll` 是 Epic 专有二进制，
+> **既不在本仓库中**（已 gitignore，不提交），**也不包含在任何 release
+> 发布包中**。需要时请从获得授权的 Oodle SDK 获取两个 DLL，按下列任一
+> 手动方式放置后即可启用 `encoder=oodle`：
+> - **本地构建暂存**：把两个 DLL 拷进 `oodle_testenv\bin\`，再运行
+>   `tools\build.ps1`，本地构建会将其暂存到 `out\editor-plugin\Bc7Rdo\`
+>   供本地测试/安装；
+> - **发布包安装后**：解压 editor-plugin 包并复制进工程 `Assets` 后，
+>   把两个 DLL 直接拷进插件目录（与 `bc7_rdo_hook.dll` 同目录）。
 
 ## 实测结果（photo 256×256，basic，perceptual）
 

@@ -11,3 +11,10 @@ vendor/compress_bc7e_original.dll
 
 # 运行日志
 renderdoc_mcp_server.log
+
+# UE 5.8 引擎源码 + Oodle SDK（Epic 专有，仅本地参考）
+TextureFormatOodle/
+
+# 对比测试中间产物与测试图片（图片本地自备）
+contrast/_work/
+contrast/image/

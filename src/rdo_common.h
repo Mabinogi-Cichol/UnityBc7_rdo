@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include <string>
 #include <mutex>
 
@@ -67,6 +68,15 @@ struct rdo_config
     float max_rms_increase_ratio = 10.0f;
     bool two_matches = true;
     bool debug = false;
+
+    // Oodle 编码器选项（仅 encoder=oodle 时生效；默认 bc7enc_rdo 路径忽略）：
+    //   use_oodle   : encoder=oodle 时为 true（大小写不敏感）
+    //   oodle_effort: low=10, normal=20, high=30（其他值一律映射为 high=30）
+    //   oodle_lambda: Oodle RDO 强度（整数 0..100，默认 30）；与 ERT 的 lambda
+    //                 相互独立，不做换算
+    bool use_oodle = false;
+    int oodle_effort = 30;
+    int oodle_lambda = 30;
 };
 
 // 解析配置文件（key = value 格式，未知键忽略，缺省使用 rdo_config 默认值）
@@ -79,10 +89,21 @@ inline rdo_config load_config(const std::wstring& path)
         return c;
 
     char line[256];
+    bool first_line = true;
     while (fgets(line, sizeof(line), f))
     {
+        // 跳过文件首行的 UTF-8 BOM（EF BB BF）：否则 BOM 会混进第一个 key
+        //（例如 encoder=），导致该键被静默忽略。
+        char* p = line;
+        if (first_line)
+        {
+            first_line = false;
+            if ((unsigned char)p[0] == 0xEF && (unsigned char)p[1] == 0xBB &&
+                (unsigned char)p[2] == 0xBF)
+                p += 3;
+        }
         char key[64] = {}, value[128] = {};
-        if (sscanf(line, " %63[^= \t] = %127s", key, value) != 2)
+        if (sscanf(p, " %63[^= \t] = %127s", key, value) != 2)
             continue;
         if (!_stricmp(key, "lambda"))
             c.lambda = (float)atof(value);
@@ -96,6 +117,26 @@ inline rdo_config load_config(const std::wstring& path)
             c.two_matches = atoi(value) != 0;
         else if (!_stricmp(key, "debug"))
             c.debug = atoi(value) != 0;
+        else if (!_stricmp(key, "encoder"))
+            c.use_oodle = !_stricmp(value, "oodle");
+        else if (!_stricmp(key, "oodle_effort"))
+        {
+            if (!_stricmp(value, "low"))
+                c.oodle_effort = 10;
+            else if (!_stricmp(value, "normal"))
+                c.oodle_effort = 20;
+            else // "high" 及任何其他值 -> 30
+                c.oodle_effort = 30;
+        }
+        else if (!_stricmp(key, "oodle_lambda"))
+        {
+            // 仅接受完整解析成功且落在 0..100 的整数；否则保持默认值 30
+            char* end = nullptr;
+            errno = 0;
+            long v = strtol(value, &end, 10);
+            if (errno == 0 && end != value && *end == '\0' && v >= 0 && v <= 100)
+                c.oodle_lambda = (int)v;
+        }
     }
     fclose(f);
     return c;
