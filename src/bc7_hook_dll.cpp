@@ -704,11 +704,27 @@ extern "C" void bc7elib_compress_blocks_hook(
 
     if (cfg.use_oodle)
     {
-        // ---- Oodle 编码器路径：不调用原 bc7e，不做 ERT 后处理 ----
         // RGBM 可选用独立 Oodle lambda；未设置（-1）时沿用通用值。
+        // 选中的 lambda=0 是该类纹理的 Unity 原生 BC7 快路径：不加载/调用
+        // Oodle，也不接 ERT 后处理。因此 oodle_lambda=0 仅影响普通 RGBA，
+        // 而 rgbm_oodle_lambda=0 仅影响已识别的 RGBM Job。
         const int l = (is_rgbm && cfg.rgbm_oodle_lambda >= 0) ?
             cfg.rgbm_oodle_lambda : cfg.oodle_lambda;
+        if (l == 0)
+        {
+            if (real)
+                real(num_blocks, pBlocks, pPixelsRGBA, pComp_params);
+            else
+                memset(pBlocks, 0, (size_t)num_blocks * 16u);
 
+            if (cfg.debug)
+                hook_log("RDO bypassed (oodle lambda=0): Unity native BC7 "
+                         "rgbm=%d num_blocks=%u pBlocks=0x%p",
+                         is_rgbm ? 1 : 0, num_blocks, (void*)pBlocks);
+            return;
+        }
+
+        // ---- Oodle 编码器路径：不调用原 bc7e，不做 ERT 后处理 ----
         if (oodle_hook::available() &&
             oodle_hook::encode_bc7_rdo(num_blocks, pBlocks, pPixelsRGBA, l,
                                        cfg.oodle_effort))

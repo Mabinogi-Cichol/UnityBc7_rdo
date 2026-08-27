@@ -60,8 +60,9 @@ rgbm_max_rms_increase_ratio=1.5
   `oodle` 走 Oodle Texture RDO（需插件目录存在两个 Oodle DLL，见"编码器切换"）。
 - `lambda`：**仅 `bc7enc_rdo` 编码器使用**的 RDO 强度（浮点 ERT lambda），
   越大越激进（更小的 LZ 体积、略降质量）；`lambda=0` 关闭。
-- `oodle_lambda`：**仅 `oodle` 编码器使用**的 RDO 强度（整数 0..100，
-  默认 30 = UE 默认档）。与 `lambda` 相互独立，不做换算。
+- `oodle_lambda`：普通 RGBA 图在 `oodle` 编码器下的 RDO 强度（整数 0..100，
+  默认 30 = UE 默认档）。设为 `0` 时，RGBA 不加载或调用 Oodle，直接走 Unity
+  原生 BC7 编码且不做 ERT 后处理；与 `lambda` 相互独立，不做换算。
 - `rgbm_oodle_lambda`：仅 `encoder=oodle` 的已识别 RGBM Job 使用的 Oodle
   RDO 强度（整数 0..100）。默认 `-1`，表示继承 `oodle_lambda`；设置后只影响
   RGBM，不影响普通纹理。
@@ -102,6 +103,10 @@ RDO**，只需把 `bc7_rdo_config.txt` 中的 `encoder` 改为 `oodle`：
 - 切换后 hook 做完整 Oodle RDO 编码（跳过 bc7e+ERT），包括 RGBM 图片也直接
   走 Oodle；RGBM 可由 `rgbm_oodle_lambda` 覆盖通用 `oodle_lambda`，
   `oodle_effort` 仍共享。`rgbm_rdo`、`lambda`、`lookback` 等 ERT 键被忽略。
+- 对每类纹理，最终选中的 Oodle lambda 为 `0` 时，都会直接走 Unity 原生 BC7，
+  既不使用 Oodle，也不做 ERT 后处理：`oodle_lambda=0` 只影响普通 RGBA；
+  `rgbm_oodle_lambda=0` 只影响已识别的 RGBM Job。`rgbm_oodle_lambda=-1` 时
+  RGBM 继承 `oodle_lambda`。
 - 若 `encoder=oodle` 但 Oodle DLL 缺失或编码失败，插件自动**回退到默认
   `bc7enc_rdo` / ERT RDO 路径**：调用原 bc7e 压缩后接 ERT 后处理，与
   `encoder=bc7enc_rdo` 行为完全一致（**不是**无 RDO 的普通 bc7e），仅打

@@ -146,7 +146,10 @@ python tests\test_compat.py
 **Oodle Texture RDO**（需把两个 Epic 专有 DLL `oo2tex_win64_2.9.16.dll` 与
 `oo2texrt_win64_2.9.16.dll` 放进插件目录，见下方许可说明）。两种编码器
 使用**各自独立**的 RDO 强度旋钮，互不换算：`lambda`（浮点，ERT）只作用于
-`bc7enc_rdo`；`oodle_lambda`（整数 0..100，默认 30）只作用于 `oodle`；
+`bc7enc_rdo`；`oodle_lambda`（整数 0..100，默认 30）只作用于普通 RGBA 的
+`oodle` 路径；它为 `0` 时 RGBA 直接走 Unity 原生 BC7（不调用 Oodle，也不做
+ERT 后处理）。RGBM 则优先使用 `rgbm_oodle_lambda`，该值为 `0` 时 RGBM 也走
+Unity 原生 BC7；
 `oodle_effort=low|normal|high` 调节 Oodle 耗时。两编码器档位对照参考见
 [docs/OODLE_LAMBDA_COMPARISON.md](docs/OODLE_LAMBDA_COMPARISON.md)
 （λ_ert ≈ λ_oodle×0.0375）。**Oodle 不可用（DLL 缺失或编码失败）时，hook

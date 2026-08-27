@@ -269,10 +269,13 @@ Bc7Rdo.HookLoader.SmokeTest` 后断言：退出码 0、unity.log 出现
 
 - **`encoder=bc7enc_rdo`（默认）**：既有路径——bc7e 压缩后接 ERT RDO
   后处理，全部逻辑开源随包分发；
-- **`encoder=oodle`**：hook 改用 Oodle Texture RDO 做**完整 RDO 编码**
-  （跳过 bc7e+ERT）。RDO 强度由独立的 `oodle_lambda`（整数 0..100，默认
-  30）给出，与 ERT 的 `lambda` 互不换算；`oodle_effort=low|normal|high`
-  （默认 `high`）调节耗时。ERT 专用键
+- **`encoder=oodle`**：当 `oodle_lambda>0` 时，hook 改用 Oodle Texture RDO
+  做**完整 RDO 编码**（跳过 bc7e+ERT）。RDO 强度由独立的 `oodle_lambda`
+  （整数 0..100，默认 30）给出，与 ERT 的 `lambda` 互不换算；
+  `oodle_effort=low|normal|high`（默认 `high`）调节耗时。普通 RGBA 的
+  `oodle_lambda=0` 会直接使用 Unity 原生 BC7，不加载或调用 Oodle，也不做
+  ERT 后处理；RGBM 若设置 `rgbm_oodle_lambda=0` 也独立走该原生路径，
+  `rgbm_oodle_lambda=-1` 时才继承通用值。ERT 专用键
    `lambda`/`lookback`/`smooth_scale`/`max_rms_increase_ratio`/`two_matches`
    被忽略。需要插件目录存在两个 Epic 专有 DLL：
    `oo2tex_win64_2.9.16.dll` 与 `oo2texrt_win64_2.9.16.dll`（已 gitignore，

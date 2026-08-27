@@ -86,9 +86,11 @@ struct rdo_config
     // Oodle 编码器选项（仅 encoder=oodle 时生效；默认 bc7enc_rdo 路径忽略）：
     //   use_oodle   : encoder=oodle 时为 true（大小写不敏感）
     //   oodle_effort: low=10, normal=20, high=30（其他值一律映射为 high=30）
-    //   oodle_lambda: Oodle RDO 强度（整数 0..100，默认 30）；与 ERT 的 lambda
-    //                 相互独立，不做换算
-    //   rgbm_oodle_lambda: 仅 RGBM Job 的覆盖值；-1 表示沿用 oodle_lambda
+    //   oodle_lambda: 普通 RGBA 的 Oodle RDO 强度（整数 0..100，默认 30）；
+    //                 0 时 RGBA 直接使用 Unity 原生 BC7（且不做 ERT 后处理）；
+    //                 与 ERT 的 lambda 相互独立，不做换算
+    //   rgbm_oodle_lambda: 仅 RGBM Job 的覆盖值；-1 表示沿用 oodle_lambda；
+    //                 0 时 RGBM 直接使用 Unity 原生 BC7
     bool use_oodle = false;
     int oodle_effort = 30;
     int oodle_lambda = 30;

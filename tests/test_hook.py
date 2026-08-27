@@ -34,9 +34,15 @@ HOOK_DLL = ROOT / "out" / "bc7_rdo_hook.dll"
 WRAPPER_DLL = ROOT / "out" / "compress_bc7e.dll"  # 仅用其 debug 解码导出算 PSNR
 
 CONFIG_TEXT = (
-    "lambda={lam}\nlookback=128\nsmooth_scale=15\n"
+    "encoder={encoder}\nlambda={lam}\n"
+    "oodle_lambda={oodle_lambda}\nlookback=128\nsmooth_scale=15\n"
     "max_rms_increase_ratio=10\ntwo_matches=1\ndebug=0\n"
 )
+
+
+def config_text(lam, encoder="bc7enc_rdo", oodle_lambda=30):
+    return CONFIG_TEXT.format(lam=lam, encoder=encoder,
+                              oodle_lambda=oodle_lambda)
 
 
 def main():
@@ -55,7 +61,7 @@ def main():
 
         shutil.copyfile(ORIGINAL_DLL, target_dll)
         shutil.copyfile(HOOK_DLL, hook_dll)
-        cfg.write_text(CONFIG_TEXT.format(lam=0), encoding="utf-8")
+        cfg.write_text(config_text(0), encoding="utf-8")
 
         # 1. 基线：vendor 副本（模块名 compress_bc7e_original.dll，永远不会被挂钩）
         baseline = Bc7eDll(ORIGINAL_DLL, "baseline")
@@ -84,8 +90,21 @@ def main():
             sys.exit(f"lambda=0 转发输出不一致: {block_diff_count(out_base, out_forward)} blocks 不同")
         print(f"\n转发一致: lambda=0 输出与基线逐字节相同（{len(out_base)} 字节, {num_blocks} 块）")
 
-        # 5. RDO 生效：lambda=4 时输出改变、zlib9 更小、PSNR 略降
-        cfg.write_text(CONFIG_TEXT.format(lam=4), encoding="utf-8")
+        # 5. Oodle 零 lambda：不尝试加载 Oodle，直接使用 Unity 原生 BC7，
+        # 且不做 ERT 后处理。测试目录故意没有 Oodle DLL；若错误调用 Oodle，
+        # hook 日志会出现 LoadLibraryW 失败的 "oodle:" 记录。
+        cfg.write_text(config_text(4, encoder="oodle", oodle_lambda=0),
+                       encoding="utf-8")
+        out_oodle_zero = hooked.compress_bytes(pixels, num_blocks, params)
+        if out_oodle_zero != out_base:
+            sys.exit("encoder=oodle, oodle_lambda=0 未走 Unity 原生 BC7")
+        log_text = log.read_text(encoding="utf-8", errors="replace")
+        if "oodle:" in log_text:
+            sys.exit("oodle_lambda=0 仍尝试加载或调用 Oodle:\n" + log_text)
+        print("Oodle 零 lambda: Unity 原生 BC7 输出逐字节一致，未加载 Oodle")
+
+        # 6. RDO 生效：lambda=4 时输出改变、zlib9 更小、PSNR 略降
+        cfg.write_text(config_text(4), encoding="utf-8")
         out_rdo = hooked.compress_bytes(pixels, num_blocks, params)
 
         changed = block_diff_count(out_base, out_rdo)
