@@ -90,8 +90,58 @@ namespace ert
 		uint64_t m_total2;
 	};
 
-	static inline float compute_block_max_std_dev(const color_rgba* pPixels, uint32_t block_width, uint32_t block_height, uint32_t num_comps)
+	struct srgb_to_linear_lut
 	{
+		float m_values[256];
+
+		srgb_to_linear_lut()
+		{
+			for (uint32_t i = 0; i < 256; i++)
+			{
+				const float s = i * (1.0f / 255.0f);
+				m_values[i] = s <= 0.04045f ? s * (1.0f / 12.92f) :
+					powf((s + 0.055f) * (1.0f / 1.055f), 2.4f);
+			}
+		}
+	};
+
+	static inline const srgb_to_linear_lut& get_srgb_to_linear_lut()
+	{
+		static const srgb_to_linear_lut lut;
+		return lut;
+	}
+
+	static inline float compute_block_max_std_dev(const color_rgba* pPixels, uint32_t block_width, uint32_t block_height, uint32_t num_comps, bool rgbm)
+	{
+		if (rgbm)
+		{
+			// Unity imports these RGBM lightmaps as RGBA_BC7_SRGB in a Linear
+			// project. Hardware linearizes RGB, but alpha/M remains linear.
+			const srgb_to_linear_lut& lut = get_srgb_to_linear_lut();
+			double sums[3] = {}, sums2[3] = {};
+			const uint32_t pixel_count = block_width * block_height;
+			for (uint32_t i = 0; i < pixel_count; i++)
+			{
+				const color_rgba& pixel = pPixels[i];
+				for (uint32_t c = 0; c < 3; c++)
+				{
+					// linear RGB * M, scaled to the usual 0..255 metric range.
+					const double v = lut.m_values[pixel.m_c[c]] * pixel.m_c[3];
+					sums[c] += v;
+					sums2[c] += v * v;
+				}
+			}
+
+			float max_std_dev = 0.0f;
+			for (uint32_t c = 0; c < 3; c++)
+			{
+				const double mean = sums[c] / pixel_count;
+				const double variance = std::max(0.0, sums2[c] / pixel_count - mean * mean);
+				max_std_dev = std::max(max_std_dev, (float)sqrt(variance));
+			}
+			return max_std_dev;
+		}
+
 		tracked_stat comp_stats[4];
 
 		for (uint32_t y = 0; y < block_height; y++)
@@ -111,8 +161,30 @@ namespace ert
 		return max_std_dev;
 	}
 
-	static inline float compute_block_mse(const color_rgba* pPixelsA, const color_rgba* pPixelsB, uint32_t block_width, uint32_t block_height, uint32_t total_block_pixels, uint32_t num_comps, const uint32_t weights[4], float one_over_total_color_weight)
+	static inline float compute_block_mse(const color_rgba* pPixelsA, const color_rgba* pPixelsB, uint32_t block_width, uint32_t block_height, uint32_t total_block_pixels, uint32_t num_comps, const uint32_t weights[4], float one_over_total_color_weight, bool rgbm)
 	{
+		if (rgbm)
+		{
+			// Target format is RGBA_BC7_SRGB: RGB is converted to linear by the
+			// sampler before multiplication by alpha/M. Unity's HDR range multiplier
+			// is constant and cancels when comparing ERT candidates.
+			const srgb_to_linear_lut& lut = get_srgb_to_linear_lut();
+			double total_err = 0.0;
+			for (uint32_t i = 0; i < total_block_pixels; i++)
+			{
+				const color_rgba* pA = pPixelsA + i;
+				const color_rgba* pB = pPixelsB + i;
+				for (uint32_t c = 0; c < 3; c++)
+				{
+					const double a = lut.m_values[pA->m_c[c]] * pA->m_c[3];
+					const double b = lut.m_values[pB->m_c[c]] * pB->m_c[3];
+					const double d = a - b;
+					total_err += d * d;
+				}
+			}
+			return (float)(total_err / (3.0 * total_block_pixels));
+		}
+
 		uint64_t total_err = 0;
 
 		if ((block_width == 4) && (block_height == 4) && (num_comps == 4))
@@ -334,12 +406,12 @@ namespace ert
 			if (!(*pUnpack_block_func)(pOrig_block, decoded_block, block_index, pUnpack_block_func_user_data))
 				return false;
 
-			float cur_mse = compute_block_mse(pPixels, decoded_block, block_width, block_height, total_block_pixels, num_comps, params.m_color_weights, one_over_total_color_weight);
+			float cur_mse = compute_block_mse(pPixels, decoded_block, block_width, block_height, total_block_pixels, num_comps, params.m_color_weights, one_over_total_color_weight, params.m_rgbm);
 
 			if ((params.m_skip_zero_mse_blocks) && (cur_mse == 0.0f))
 				continue;
 
-			const float max_std_dev = compute_block_max_std_dev(pPixels, block_width, block_height, num_comps);
+			const float max_std_dev = compute_block_max_std_dev(pPixels, block_width, block_height, num_comps, params.m_rgbm);
 			
 			float yl = clampf(max_std_dev / params.m_max_smooth_block_std_dev, 0.0f, 1.0f);
 			yl = yl * yl;
@@ -444,7 +516,7 @@ namespace ert
 								if (!(*pUnpack_block_func)(trial_block, decoded_trial_block, block_index, pUnpack_block_func_user_data))
 									continue;
 
-								float trial_mse = compute_block_mse(pPixels, decoded_trial_block, block_width, block_height, total_block_pixels, num_comps, params.m_color_weights, one_over_total_color_weight);
+								float trial_mse = compute_block_mse(pPixels, decoded_trial_block, block_width, block_height, total_block_pixels, num_comps, params.m_color_weights, one_over_total_color_weight, params.m_rgbm);
 
 								if (trial_mse < thresh_ms_err)
 								{
@@ -530,7 +602,7 @@ namespace ert
 							if (!(*pUnpack_block_func)(trial_block, decoded_trial_block, block_index, pUnpack_block_func_user_data))
 								continue;
 
-							float trial_mse = compute_block_mse(pPixels, decoded_trial_block, block_width, block_height, total_block_pixels, num_comps, params.m_color_weights, one_over_total_color_weight);
+							float trial_mse = compute_block_mse(pPixels, decoded_trial_block, block_width, block_height, total_block_pixels, num_comps, params.m_color_weights, one_over_total_color_weight, params.m_rgbm);
 
 							if (trial_mse < thresh_ms_err)
 							{
@@ -603,7 +675,7 @@ namespace ert
 								if (!(*pUnpack_block_func)(trial_block, decoded_trial_block, block_index, pUnpack_block_func_user_data))
 									continue;
 
-								float trial_mse = compute_block_mse(pPixels, decoded_trial_block, block_width, block_height, total_block_pixels, num_comps, params.m_color_weights, one_over_total_color_weight);
+								float trial_mse = compute_block_mse(pPixels, decoded_trial_block, block_width, block_height, total_block_pixels, num_comps, params.m_color_weights, one_over_total_color_weight, params.m_rgbm);
 
 								if (trial_mse < thresh_ms_err)
 								{

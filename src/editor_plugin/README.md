@@ -40,11 +40,18 @@ encoder=bc7enc_rdo
 lambda=1
 oodle_effort=high
 oodle_lambda=30
+rgbm_oodle_lambda=30
 lookback=128
 smooth_scale=15
 max_rms_increase_ratio=10
 two_matches=1
 debug=0
+trace_bc7_callstacks=0
+unity_rgbm_context_hooks=0
+rgbm_rdo=1
+rgbm_lambda=0.25
+rgbm_smooth_scale=30
+rgbm_max_rms_increase_ratio=1.5
 ```
 
 各键含义：
@@ -55,10 +62,29 @@ debug=0
   越大越激进（更小的 LZ 体积、略降质量）；`lambda=0` 关闭。
 - `oodle_lambda`：**仅 `oodle` 编码器使用**的 RDO 强度（整数 0..100，
   默认 30 = UE 默认档）。与 `lambda` 相互独立，不做换算。
+- `rgbm_oodle_lambda`：仅 `encoder=oodle` 的已识别 RGBM Job 使用的 Oodle
+  RDO 强度（整数 0..100）。默认 `-1`，表示继承 `oodle_lambda`；设置后只影响
+  RGBM，不影响普通纹理。
 - `oodle_effort`：`low | normal | high`（默认 `high`），仅 Oodle 编码器使用。
 - `lookback`、`smooth_scale`、`max_rms_increase_ratio`、`two_matches`：
   ERT 参数，仅 `bc7enc_rdo` 编码器使用。
 - `debug`：`1` 时输出 RDO 调用日志（会刷屏，调试完务必改回 `0`）。
+- `trace_bc7_callstacks`：仅供定位 Unity 内部调用路径。记录前 N 次（最多 64）
+  BC7 调用的模块相对地址栈；`0` 为关闭。典型诊断值为 `1`，完成后改回 `0`。
+- `unity_rgbm_context_hooks`：`1` 时启用 Unity **2022.3.62f1** 专用的原生
+  RGBM 上下文 hook。它从 `ConvertImageToRGBM` 标记像素源，并在 BC7 Job
+  Worker 中恢复该标记；必须在启动 Unity 前设置。hook 会校验两个入口的
+  固定入口指纹（12/15 字节），不匹配会拒绝安装；标记只在对应 BC7 Job 的执行期间有效，
+  不会因像素内存地址后续复用而误命中。
+- `rgbm_rdo`：仅在 `encoder=bc7enc_rdo` 且上述上下文 hook 已成功标记 RGBM
+  Job 时生效，默认 `1`。目标格式为 `RGBA_BC7_SRGB`，因此它让 ERT 以 Unity
+  实际采样后的 `Linear(sRGB) * M` 三通道误差进行候选块比较、RMS 限制和光滑
+  块判断，而不是把 RGBA 当作四个独立通道。`0` 保留普通 RGBA ERT 度量。
+- `rgbm_lambda`：RGBM 专用 ERT 强度，默认 `0.25`；仍受全局 `lambda` 总开关
+  控制，`lambda=0` 会关闭所有 ERT。
+- `rgbm_smooth_scale`：RGBM 光滑区域失真惩罚，默认 `30`。
+- `rgbm_max_rms_increase_ratio`：RGBM 单块允许的最大 RMS 增长倍数，默认
+  `1.5`，用于阻止少量块出现很强的局部劣化。
 
 ## 编码器切换
 
@@ -73,8 +99,9 @@ RDO**，只需把 `bc7_rdo_config.txt` 中的 `encoder` 改为 `oodle`：
      `tools\build.ps1` 后它们会被暂存进 `out\editor-plugin\Bc7Rdo\`；
   2. **release 包**：解压插件包并复制进工程 `Assets` 后，直接把两个 DLL
      拷进插件目录（与 `bc7_rdo_hook.dll` 同目录）。
-- 切换后 hook 做完整 Oodle RDO 编码（跳过 bc7e+ERT），`oodle_lambda` /
-  `oodle_effort` 生效；`lambda`、`lookback` 等 ERT 键被忽略。
+- 切换后 hook 做完整 Oodle RDO 编码（跳过 bc7e+ERT），包括 RGBM 图片也直接
+  走 Oodle；RGBM 可由 `rgbm_oodle_lambda` 覆盖通用 `oodle_lambda`，
+  `oodle_effort` 仍共享。`rgbm_rdo`、`lambda`、`lookback` 等 ERT 键被忽略。
 - 若 `encoder=oodle` 但 Oodle DLL 缺失或编码失败，插件自动**回退到默认
   `bc7enc_rdo` / ERT RDO 路径**：调用原 bc7e 压缩后接 ERT 后处理，与
   `encoder=bc7enc_rdo` 行为完全一致（**不是**无 RDO 的普通 bc7e），仅打

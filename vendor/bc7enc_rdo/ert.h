@@ -36,6 +36,12 @@ namespace ert
 		bool m_skip_zero_mse_blocks;
 		bool m_debug_output;
 
+		// RGBM stores HDR as Linear(sRGB) * M (M is alpha) for the Unity
+		// RGBA_BC7_SRGB path. When enabled, ERT judges candidates in that
+		// reconstructed RGB domain instead of treating RGBA as four unrelated
+		// channels. The result stays on the ordinary 0..255 metric scale.
+		bool m_rgbm;
+
 		reduce_entropy_params() { clear(); }
 
 		void clear()
@@ -53,6 +59,7 @@ namespace ert
 			m_allow_relative_movement = false;
 			m_skip_zero_mse_blocks = false;
 			m_debug_output = false;
+			m_rgbm = false;
 		}
 
 		void print()
