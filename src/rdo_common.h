@@ -189,8 +189,13 @@ inline rdo_config load_config(const std::wstring& path)
 
 // 配置热重载：每次调用检查配置文件是否新建/修改，避免首次解析后无法感知变化。
 // config_path 由调用方提供（例如 config_path_in_module_dir(模块内函数地址)）。
-inline const rdo_config& watched_config(const std::wstring& config_path)
+inline rdo_config watched_config(const std::wstring& config_path)
 {
+    // Unity Job Worker 会并发首次读取和热重载配置。所有缓存状态（尤其是
+    // std::wstring 的分配/比较）都必须受同一把锁保护；返回值快照，避免
+    // 解锁后调用方读取配置时另一线程恰好更新共享 cached。
+    static std::mutex cache_mutex;
+    std::lock_guard<std::mutex> lock(cache_mutex);
     static rdo_config cached;
     static FILETIME cached_time = {};
     static bool first = true;
@@ -241,7 +246,7 @@ inline bool unpack_bc7_callback(const void* pBlock, ert::color_rgba* pPixels,
 inline void apply_rdo(uint32_t num_blocks, uint64_t* pBlocks,
                       const uint32_t* pPixelsRGBA, bool rgbm = false)
 {
-    const rdo_config& cfg = watched_config(config_path_in_module_dir((LPCVOID)&apply_rdo));
+    const rdo_config cfg = watched_config(config_path_in_module_dir((LPCVOID)&apply_rdo));
     // lambda 仍是 ERT 的总开关；RGBM 开启后再使用自己的保守强度。
     if (cfg.lambda <= 0.0f || !num_blocks)
         return;

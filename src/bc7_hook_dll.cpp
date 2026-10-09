@@ -690,7 +690,7 @@ extern "C" void bc7elib_compress_blocks_hook(
     const bc7e_compress_block_params* pComp_params)
 {
     // 配置在本函数顶部读取一次（含 debug 日志用），热重载由 watched_config 负责
-    const rdo::rdo_config& cfg = rdo::watched_config(
+    const rdo::rdo_config cfg = rdo::watched_config(
         rdo::config_path_in_module_dir((LPCVOID)&install_hook));
 
     maybe_log_bc7_callstack(cfg, num_blocks, pComp_params);
