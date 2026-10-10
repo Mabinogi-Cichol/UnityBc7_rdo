@@ -114,6 +114,19 @@ rgbm_max_rms_increase_ratio=1.5
 - `rgbm_max_rms_increase_ratio`：RGBM 单块允许的最大 RMS 增长倍数，默认
   `1.5`，用于阻止少量块出现很强的局部劣化。
 
+## 部署后的 meta 解析错误
+
+`.meta` 通常由 Unity 自动生成；仓库部署脚本会为 coordinator 和 loader gate
+预写 Windows Editor／x86_64 设置。v0.5.1 修复了脚本未写入文件末尾换行的问题，
+避免启动时出现 `Parser Failure at line 29: Expect ':' between key and value within mapping`。
+再次部署时也会给已有文件补齐末尾换行，保留 GUID 和平台设置。
+
+通过旧版部署脚本安装的工程，先关闭 Editor 和 Worker，再使用当前仓库的
+`tools/deploy_rgbm_portability.ps1` 重新部署；也可仅在
+`bc7_rgbm_coordinator.dll.meta` 和 `bc7_rgbm_loader_gate.dll.meta` 的最后一行后
+补一个换行并保存。已有损坏的 `.meta` 需要单独修复，更新 ZIP 中的 DLL 后仍应完成此步骤。
+发布 ZIP 不含这两个 `.meta`，全新安装时由 Unity 自动生成。
+
 ## 编码器切换
 
 默认编码器是 `bc7enc_rdo`（ERT，开源，随插件分发）。要改用 **Oodle Texture

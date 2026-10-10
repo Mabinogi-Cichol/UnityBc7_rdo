@@ -64,7 +64,16 @@ PluginImporter:
   assetBundleName:
   assetBundleVariant:
 "@
-        [IO.File]::WriteAllText($meta, $text, [Text.UTF8Encoding]::new($false))
+        # Unity's YAML reader needs a line terminator after the final empty value.
+        # PowerShell here-strings omit the newline before the closing marker.
+        [IO.File]::WriteAllText($meta, $text + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+    }
+    else {
+        $text = [IO.File]::ReadAllText($meta)
+        if ($text.Length -gt 0 -and -not $text.EndsWith("`n")) {
+            # Repair metadata from earlier deployments without changing GUID/settings.
+            [IO.File]::WriteAllText($meta, $text + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+        }
     }
 }
 $records = @(Get-ChildItem -LiteralPath $source -File -Recurse | Where-Object { $_.Name -ne 'bc7_rdo_config.txt' } | ForEach-Object {
