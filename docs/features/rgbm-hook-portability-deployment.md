@@ -81,7 +81,7 @@ Hook／注入本身依赖 Windows API，不要求安装 VS。主 DLL／协调器
 按调整后的范围，P4 完成状态不依赖这一额外场景，也不宣称它已实测通过。
 
 跨 f1／f2 的真实 RGBM／普通编码参数、调度行为、零 lambda、晚启动 Worker 编码矩阵后续已由 [P5](rgbm-hook-portability-acceptance.md) 完成，实际工程保留其最终通过的插件。
-本文件的 P4 `Ready` 和导入证据本身不替代 P5；P6 交付仍待施工，完整 feature 尚未完成。
+本文件的 P4 `Ready` 和导入证据本身不替代 P5；后续 [P6 交付](rgbm-hook-portability-release.md) 已完成 v0.5.0 构建、验证与正式发布，本文件保留 P4 当时的证据身份。
 
 ## 本地证据
 

@@ -3,7 +3,7 @@
 - 日期：2026-10-10（Asia/Shanghai）
 - Feature：`rgbm-hook-portability`
 - 配套：[设计](rgbm-hook-portability-design.md)、[施工记录](rgbm-hook-portability-construction.md)、[P4 部署](rgbm-hook-portability-deployment.md)
-- 状态：P5 已完成；最终同一插件的跨版本矩阵、原生回归及实际工程验收均通过，P6 待施工。
+- 状态：P5 已完成；最终同一插件的跨版本矩阵、原生回归及实际工程验收均通过。P6 已发布 v0.5.0，重新构建的发行二进制验证见 [P6 报告](rgbm-hook-portability-release.md)。
 
 本文及 `out/rgbm-portability/acceptance/Bc7Rdo` 保留 P5 当时的双 C# 脚本快照。后续已将绑定准备合入 `hook_loader.cs`，原生产物不变；新的四轮跨版本编码和实际工程部署验证见[施工记录 R29](rgbm-hook-portability-construction.md)。后续证据位于 `out/rgbm-portability/loader-merge`，不覆盖本文的历史验收身份。
 

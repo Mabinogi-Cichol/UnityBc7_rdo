@@ -2,7 +2,7 @@
 
 - Feature ID：`rgbm-hook-portability`
 - 建立日期：2026-10-09（Asia/Shanghai）
-- 状态：P0–P5 已完成；同一最终插件的 f1／f2 Editor／batchmode／Worker、实际工程编码与恢复通过；P6 待施工，无 VS 测试按用户要求取消
+- 状态：P0–P6 已完成，v0.5.0 已发布；实测支持 Windows x64 f1／f2，边界见 P5／P6；无 VS 测试按用户要求取消
 - 源码基线：`7cd4ded`，配置缓存并发修复已提交
 - 配套文档：[施工记录](rgbm-hook-portability-construction.md)
 - P0 结论：[接口差异、回调作用域及依赖路线](rgbm-hook-portability-interface.md)
@@ -10,6 +10,7 @@
 - P3 交付：[运行时、编码退化和故障退出](rgbm-hook-portability-runtime.md)
 - P4 记录：[Editor／Worker 与部署](rgbm-hook-portability-deployment.md)
 - P5 交付：[跨版本编码验收](rgbm-hook-portability-acceptance.md)
+- P6 交付：[v0.5.0 发行验收](rgbm-hook-portability-release.md)
 - 部署整理：绑定准备已合入 `hook_loader.cs`；原生 DLL 合并另记为 [TODO feature](rgbm-hook-dll-consolidation-design.md)
 
 ## 1. 要解决的问题
@@ -180,7 +181,7 @@ P3 已实现并验证以下退化行为；运行时范围和证据见 [P3 报告
 | P3：RGBM 运行时（已完成） | 接入动态入口、Job 关联和状态机；清理旧实验路径 | 两点 Hook、64 槽、三态、原生退化与故障退出 | 并发／嵌套／地址复用、C++／SEH 清理、两版实际代码副本、编码与配置并发回归通过；实际 Unity 调度与部署按 P4／P5 |
 | P4：Editor／Worker 与部署（已完成） | 缓存准备顺序、晚加载 Worker、DIA 依赖、包内容检查 | loader、构建脚本、发布暂存目录 | 在用户实际 Windows x64／VS 打包环境可用；主进程／Worker 均验证自己的二进制；实际 f2 batchmode 与晚启动 Worker 已通过 |
 | P5：跨版本验收（已完成） | 同一最终插件在 f1／f2 上运行 native 和 Unity 用例；核对参数与输出 | 14 次运行、1,140 份 BC7 输出、20,520 次编码调用及完整块覆盖 | 两版本 Editor／batchmode／Worker、实际工程、零 λ／继承／回退／Unknown 和并发回归通过；见 P5 报告 |
-| P6：交付 | 更新使用文档、维护施工记录、产物 SHA256 与发行内容 | 可审查提交与待发布产物 | 无专有二进制／运行缓存入包；支持范围与不足明确 |
+| P6：交付（已完成） | 更新使用文档、维护施工记录、产物 SHA256 与发行内容 | 分模块提交、v0.5.0 两包、递归校验与线上核对 | 无 Unity／Oodle 二进制或运行缓存入包；DIA 按适用条件原样分发；支持范围与不足明确 |
 
 依赖顺序：P0 → P1、P2 → P3 → P4 → P5 → P6。P1 与 P2 可以独立施工，但集成前必须共同通过。没有 f2 二进制时，可以推进解析器和合成测试，不能完成 P0 的 f2 勘探或 P5 跨版本验收。
 
