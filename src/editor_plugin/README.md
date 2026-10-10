@@ -2,29 +2,56 @@
 
 把 BC7 RDO 注入到 Unity Editor 进程，无需修改 Unity 安装目录。
 
+## v0.5.0 支持范围与启动
+
+RGBM 语义 Hook 已在 Windows x64 的 Unity **2022.3.62f1／2022.3.62f2** 验证，包括 Editor、batchmode 和真实 AssetImportWorker；两版本使用同一套插件，不填写版本专用 RVA。其他 Editor 构建须通过当前映像的完整定位和接口认证，未认证版本不保证支持。
+
+发布配置仍默认 `unity_rgbm_context_hooks=0`。要启用 RGBM 参数分流，关闭目标工程及 Worker，将该项改为 `1` 后重开工程。安装状态以 `Library/Bc7Rdo/HookBindings/` 下匹配 PID／创建时间的 `*.runtime.json` 的 `Ready`、`hook_installed=true` 为准；仅看到主 DLL 加载或 BC7 导出 Hook 成功，不代表 RGBM 可用。缓存文件本身为 `Library/Bc7Rdo/HookBindings/<exe-SHA256>.v1.bindings`。
+
+解析优先使用当前 Editor 目录匹配的 `unity_x64.pdb`；没有 PDB 时采用受限扫描，错误 PDB、未知 ABI、歧义入口或已有未知 Hook 都拒绝安装。PDB 和 Unity 二进制需从合法安装获取，发行包不含这些文件。启用后语义关联不可用／Unknown 时直接使用 Unity 原生 BC7，避免套用错误的 RGBM 或普通纹理参数；`Faulted` 安装恢复错误让进程非零退出。
+
+Hook 本身无需安装 VS，私有 DIA 也不依赖开发机 VS 路径或 COM 注册；本轮只验证用户已安装 VS 的打包环境，无 VS 环境未实测。`RgbmBindings~` 和 `Licenses~` 是 Unity 忽略目录，升级时须完整保留。解析工具、未修改的 DIA、Detours 和 bc7enc_rdo 许可随包提供。
+
+已有参数、输出和主进程／Worker 一致性验证；解码差异不等同于源 HDR 的视觉质量验收。导入计时包含资源导入和采集，不是纯 Hook 性能保证。严格 Unity 内先 RGBM Ready、再首次加载 BC7 的额外场景尚未实测。DLL 合并是后续 TODO，本版仍需要主 DLL、coordinator 和 gate。
+
 ## 用法
 
 1. 把 `out\editor-plugin\Bc7Rdo\` 整个目录复制到工程 `Assets` 下任意位置
    （例如 `Assets\Plugins\Bc7Rdo\` 或 `Assets\Editor\Bc7Rdo\`），目录内包含：
-   - `hook_loader.cs`          加载器（[InitializeOnLoad] 自动执行）
+   - `hook_loader.cs`          单一加载脚本，包含 RGBM 绑定准备（[InitializeOnLoad] 自动执行）
    - `Bc7Rdo.Editor.asmdef`    **必须保留**：Editor-only 自定义程序集定义，
      保证脚本引用 UnityEditor.dll 编译通过——否则脚本放进 `Assets\Plugins`
      会被编入 firstpass 程序集（不引用 UnityEditor），打包/重新编译时报
      CS0246 编译错误
    - `bc7_rdo_hook.dll`        原生 hook DLL（inline detour + RDO 后处理）
+   - `bc7_rgbm_coordinator.dll`、`bc7_rgbm_loader_gate.dll` 两点 Hook 安装依赖
+   - `RgbmBindings~\`          私有 resolver、认证器与 release DIA；整个目录必须保留
    - `bc7_rdo_config.txt`      RDO 配置（含编码器切换开关）
    - `oo2tex_win64_2.9.16.dll`、`oo2texrt_win64_2.9.16.dll`
                                Oodle Texture 编码器运行库（可选：仅
                                `encoder=oodle` 时需要。**不在 release 包内**，
                                需手动从 Oodle SDK 拷贝，见"编码器切换"）
 2. 重启 / 重新打开工程即自动生效。无需管理员权限。
+   从含独立 `rgbm_bindings_loader.cs` 的版本升级时，先关闭目标工程并删除旧脚本及其 `.meta`，避免重复类型定义；`tools/deploy_rgbm_portability.ps1` 会先备份插件并自动清理这两个旧文件。
 3. 打包安全：`hook_loader.cs` 内置 AssetPostprocessor，首次导入时自动把
-   `bc7_rdo_hook.dll` 与两个 Oodle DLL 的插件导入器设为**仅编辑器平台**，
+   主 Hook、协调器、gate 与两个 Oodle DLL 的插件导入器设为**仅 Windows x64 编辑器平台**，
    不会打进玩家包。
 
-原理：C# 加载器在编辑器域加载时 `LoadLibraryW` 加载 hook DLL；hook DLL 的
-DllMain 轮询等待 `compress_bc7e.dll`（Unity 首次导入 BC7 纹理时才加载），
+原理：C# 加载器先准备当前 exe 的认证缓存，再 `LoadLibraryW` 加载 hook DLL。
+DLL 初始化之外的线程先安装 RGBM 语义 Hook，再等待 `compress_bc7e.dll`，
 出现后对 `bc7elib_compress_blocks` 导出桩做 inline detour 并做 RDO 后处理。
+
+启用 `unity_rgbm_context_hooks=1` 时，缓存自动写入工程
+`Library/Bc7Rdo/HookBindings/<exe SHA256>.v1.bindings`。缓存每次使用都重新认证；
+存在匹配 PDB 时使用包内 DIA，缺少 PDB 时使用有限扫描。PDB 或接口不匹配会拒绝安装。
+运行时不查找 VS、不注册 COM，不下载 Unity PDB；Hook／注入不要求安装 VS。
+部署证据见仓库 `docs/features/rgbm-hook-portability-deployment.md`，当前包仍是施工产物。
+
+每个进程独立核对 exe 和加载入口；晚启动 Worker 由父 Editor 准备该 Worker 的缓存，
+Worker 原生层自行认证。`<PID>.<创建 FILETIME>.runtime.json` 记录本次初始化结果；
+`Ready` 表示语义 Hook 已安装，不能单独证明 RGBM 编码参数和画质验收完成。
+依赖缺失、接口不兼容或上下文未知时保留 Unity 原生 BC7。
+更换 DLL 前关闭主 Editor 及其 Worker；已安装的模块驻留到进程退出，重编译脚本不会热卸载。
 
 并行导入：Unity 2022 的批量 reimport 由 AssetImportWorker 子进程执行（不
 运行编辑器脚本），插件会自动监控并把这些 worker 也注入 hook DLL（日志见
@@ -128,7 +155,7 @@ RDO**，只需把 `bc7_rdo_config.txt` 中的 `encoder` 改为 `oodle`：
 
 ## 卸载
 
-删除 `Assets\` 下该插件目录即可，对 Unity 安装与工程其余部分零改动。
+先关闭目标 Editor 及 Worker，再删除 `Assets\` 下插件目录。原生 Hook 驻留到进程退出；菜单 Reload 和脚本域重载不提供原生热卸载，更换 DLL 也需要关闭工程。
 
 ## 许可
 

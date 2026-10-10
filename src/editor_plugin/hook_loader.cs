@@ -6,6 +6,9 @@
 //   （如 Assets\Editor\Bc7Rdo\），目录内包含：
 //     - hook_loader.cs      本脚本（自动加载 hook DLL）
 //     - bc7_rdo_hook.dll    原生 hook DLL（inline detour + ERT RDO 后处理）
+//     - bc7_rgbm_coordinator.dll / bc7_rgbm_loader_gate.dll
+//                           RGBM 私有入口的事务安装依赖
+//     - RgbmBindings~      绑定解析、认证工具与私有 DIA
 //     - oo2tex_win64_2.9.16.dll / oo2texrt_win64_2.9.16.dll
 //                           Oodle Texture 编码器运行库（可选，encoder=oodle 时使用）
 //     - bc7_rdo_config.txt  RDO 配置（同目录热更新；encoder= 可切换 bc7enc_rdo / oodle）
@@ -13,7 +16,8 @@
 //
 // 原理：
 //   C# 代码跑在 Unity Editor 进程内（[InitializeOnLoad] 静态构造在编辑器域
-//   加载时执行），只需 P/Invoke LoadLibraryW 加载 bc7_rdo_hook.dll。
+//   加载时执行），本脚本先准备当前 Unity 的 RGBM 绑定缓存，再通过
+//   LoadLibraryW 加载 bc7_rdo_hook.dll 并初始化语义 Hook。
 //   hook DLL 的 DllMain 会自行轮询等待 compress_bc7e.dll（Unity 首次导入
 //   BC7 纹理时才加载），出现后立刻对 bc7elib_compress_blocks 导出桩做
 //   inline detour，并对输出做 RDO 后处理——不需要 CreateRemoteThread/注入器。
@@ -29,6 +33,8 @@ using System.IO;
 using System.IO.Compression;
 using System.Runtime.InteropServices;
 using System.Threading;
+using System.Security.Cryptography;
+using System.Text;
 
 using UnityEditor;
 using UnityEngine;
@@ -122,6 +128,19 @@ namespace Bc7Rdo
 
         private static IntPtr _hookModule = IntPtr.Zero;   // hook DLL 句柄（永不释放）
         private static string _pluginDir = "";             // 插件目录（DLL 所在目录）
+        private static string _bindingCache = "";
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl, CharSet = CharSet.Unicode)]
+        private delegate uint RgbmInitializeDelegate([MarshalAs(UnmanagedType.LPWStr)] string cache);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+        private delegate uint RgbmStateDelegate();
+        public static uint RgbmState
+        {
+            get {
+                if (_hookModule == IntPtr.Zero) return 5;
+                var entry = GetProcAddress(_hookModule, "Bc7RgbmGetState");
+                return entry == IntPtr.Zero ? 5 : ((RgbmStateDelegate)Marshal.GetDelegateForFunctionPointer(entry, typeof(RgbmStateDelegate)))();
+            }
+        }
 
         // 静态构造：编辑器域加载时自动执行（无需用户操作）
         static HookLoader()
@@ -134,6 +153,7 @@ namespace Bc7Rdo
         {
             try
             {
+                if (Application.platform != RuntimePlatform.WindowsEditor || IntPtr.Size != 8 || AssetDatabase.IsAssetImportWorkerProcess()) return false;
                 if (_hookModule != IntPtr.Zero)
                     return true;  // 已加载，幂等
 
@@ -148,8 +168,15 @@ namespace Bc7Rdo
                     return false;
                 }
 
-                string dllPath = hits[0];
+                if (hits.Length != 1) throw new IOException("Multiple BC7 hook DLLs found; choose one plugin directory before restarting.");
+                string dllPath = Path.GetFullPath(hits[0]);
                 _pluginDir = Path.GetDirectoryName(dllPath);
+                RgbmBindingsLoader.ProjectRoot = Path.GetDirectoryName(Application.dataPath);
+                RgbmBindingsLoader.PluginDirectory = _pluginDir;
+                RgbmBindingsLoader.Enabled = RgbmBindingsLoader.ReadEnabled(Path.Combine(_pluginDir, "bc7_rdo_config.txt"));
+                string bindingError;
+                bool prepared = RgbmBindingsLoader.Prepare(EditorApplication.applicationPath, out _bindingCache, out bindingError);
+                if (!prepared) Debug.LogWarning("[Bc7Rdo] RGBM cache preparation failed; native validation will decide: " + bindingError);
 
                 _hookModule = LoadLibraryW(dllPath);
                 if (_hookModule == IntPtr.Zero)
@@ -162,6 +189,11 @@ namespace Bc7Rdo
 
                 Debug.Log("[Bc7Rdo] hook DLL 已加载: " + dllPath +
                           "（配置/日志同目录: " + _pluginDir + "）");
+                var initialize = GetProcAddress(_hookModule, "Bc7RgbmInitialize");
+                if (initialize == IntPtr.Zero) throw new IOException("Old hook DLL is resident; restart the Editor with the complete updated plugin.");
+                var init = (RgbmInitializeDelegate)Marshal.GetDelegateForFunctionPointer(initialize, typeof(RgbmInitializeDelegate));
+                uint state = init(_bindingCache);
+                Debug.Log("[Bc7Rdo] RGBM runtime state=" + state + " pid=" + System.Diagnostics.Process.GetCurrentProcess().Id + " cache=" + _bindingCache);
 
                 // 监控并行导入 worker 进程并注入（批量 reimport 的压缩走 worker）
                 ImportWorkerInjector.Start();
@@ -490,6 +522,43 @@ namespace Bc7Rdo
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool CloseHandle(IntPtr hObject);
 
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool QueryFullProcessImageNameW(IntPtr process, uint flags,
+            System.Text.StringBuilder path, ref uint size);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetProcessTimes(IntPtr process, out long creation, out long exit, out long kernel, out long user);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetModuleHandleExW(uint flags, IntPtr address, out IntPtr module);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern uint GetModuleFileNameW(IntPtr module, System.Text.StringBuilder path, uint size);
+        [DllImport("ntdll.dll")]
+        private static extern int NtQueryInformationProcess(IntPtr process, int info, IntPtr buffer, uint length, out uint needed);
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NativeUnicodeString { public ushort length, maximum; public IntPtr buffer; }
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+        private static extern IntPtr CommandLineToArgvW(string command, out int count);
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr LocalFree(IntPtr memory);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool Module32FirstW(IntPtr snapshot, ref ModuleEntry32W entry);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool Module32NextW(IntPtr snapshot, ref ModuleEntry32W entry);
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct ModuleEntry32W
+        {
+            public uint size, moduleId, processId, globalUsage, processUsage;
+            public IntPtr baseAddress;
+            public uint baseSize;
+            public IntPtr module;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)] public string name;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string path;
+        }
+
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
         private struct ProcessEntry32W
         {
@@ -518,12 +587,15 @@ namespace Bc7Rdo
             private const uint PROCESS_VM_READ = 0x0010;
             private const uint PROCESS_VM_WRITE = 0x0020;
             private const uint PROCESS_QUERY_INFORMATION = 0x0400;
+            private const uint SYNCHRONIZE = 0x00100000;
             private const uint STILL_ACTIVE = 259;
 
-            private static readonly System.Collections.Generic.HashSet<uint> s_injected =
-                new System.Collections.Generic.HashSet<uint>();
+            private sealed class Attempt { internal uint Pid; internal long Creation; internal volatile string Hash; internal volatile bool Ready; }
+            private static readonly System.Collections.Generic.Dictionary<string, Attempt> s_attempts =
+                new System.Collections.Generic.Dictionary<string, Attempt>();
             private static readonly object s_lock = new object();
             private static int s_monitorStarted;
+            private static int s_stopped;
 
             // 后台轮询：每 500ms 扫描一次子进程里的 worker 并注入（幂等）。
             // worker 可能频繁重建（每批任务后重启），间隔取小值减少漏网。
@@ -531,6 +603,8 @@ namespace Bc7Rdo
             {
                 if (Interlocked.Exchange(ref s_monitorStarted, 1) != 0)
                     return;
+                AssemblyReloadEvents.beforeAssemblyReload += Stop;
+                EditorApplication.quitting += Stop;
                 Thread t = new Thread(MonitorLoop);
                 t.IsBackground = true;
                 t.Start();
@@ -538,7 +612,7 @@ namespace Bc7Rdo
 
             private static void MonitorLoop()
             {
-                for (;;)
+                while (Volatile.Read(ref s_stopped) == 0)
                 {
                     try
                     {
@@ -551,6 +625,7 @@ namespace Bc7Rdo
                     Thread.Sleep(500);
                 }
             }
+            private static void Stop() { Interlocked.Exchange(ref s_stopped, 1); }
 
             // 扫描当前进程的子进程，把 worker（Unity.exe / AssetImportWorker*）
             // 注入 hook DLL（幂等）
@@ -558,7 +633,7 @@ namespace Bc7Rdo
             {
                 uint self = (uint)System.Diagnostics.Process.GetCurrentProcess().Id;
                 IntPtr snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-                if (snap == IntPtr.Zero)
+                if (snap == IntPtr.Zero || snap == new IntPtr(-1))
                     return;
                 try
                 {
@@ -567,7 +642,7 @@ namespace Bc7Rdo
                     bool ok = Process32FirstW(snap, ref entry);
                     while (ok)
                     {
-                        if (entry.th32ParentProcessID == self && IsWorkerName(entry.szExeFile))
+                        if (entry.th32ParentProcessID == self && IsWorkerName(entry.szExeFile) && IsProjectWorker(entry.th32ProcessID))
                             InjectIfNeeded(entry.th32ProcessID);
                         ok = Process32NextW(snap, ref entry);
                     }
@@ -586,42 +661,135 @@ namespace Bc7Rdo
                 return n == "unity.exe" ||
                        n.StartsWith("assetimportworker", StringComparison.Ordinal);
             }
+            private static bool IsProjectWorker(uint pid)
+            {
+                // Query Windows' UNICODE_STRING result directly. Unsupported or
+                // denied process-information queries safely skip this child.
+                var process = OpenProcess(PROCESS_QUERY_INFORMATION, false, pid);
+                if (process == IntPtr.Zero) return false;
+                IntPtr memory = IntPtr.Zero, argv = IntPtr.Zero;
+                try {
+                    uint needed;
+                    NtQueryInformationProcess(process, 60, IntPtr.Zero, 0, out needed);
+                    if (needed < Marshal.SizeOf(typeof(NativeUnicodeString)) || needed > 131072) return false;
+                    uint capacity = needed;
+                    memory = Marshal.AllocHGlobal((int)needed);
+                    if (NtQueryInformationProcess(process, 60, memory, needed, out needed) < 0) return false;
+                    var value = (NativeUnicodeString)Marshal.PtrToStructure(memory, typeof(NativeUnicodeString));
+                    long begin = value.buffer.ToInt64() - memory.ToInt64();
+                    if ((value.length & 1) != 0 || value.length > value.maximum || begin < Marshal.SizeOf(typeof(NativeUnicodeString)) || begin + value.length > capacity) return false;
+                    string command = Marshal.PtrToStringUni(value.buffer, value.length / 2);
+                    int count; argv = CommandLineToArgvW(command, out count);
+                    if (argv == IntPtr.Zero || count < 1 || count > 4096) return false;
+                    bool worker = false, adb2 = false, workerName = false, server = false; string project = null;
+                    for (int i = 1; i < count; ++i) {
+                        var arg = Marshal.PtrToStringUni(Marshal.ReadIntPtr(argv, i * IntPtr.Size));
+                        if (arg.Equals("-assetImportWorker", StringComparison.OrdinalIgnoreCase)) worker = true;
+                        if (arg.Equals("-adb2", StringComparison.OrdinalIgnoreCase)) adb2 = true;
+                        if (arg.Equals("-name", StringComparison.OrdinalIgnoreCase) && i + 1 < count) {
+                            string name = Marshal.PtrToStringUni(Marshal.ReadIntPtr(argv, (++i) * IntPtr.Size));
+                            const string prefix = "AssetImportWorker";
+                            workerName = name != null && name.StartsWith(prefix, StringComparison.Ordinal) && name.Length > prefix.Length;
+                            if (workerName) for (int j = prefix.Length; j < name.Length; ++j) workerName &= name[j] >= '0' && name[j] <= '9';
+                        }
+                        if (arg.Equals("-srvPort", StringComparison.OrdinalIgnoreCase) && i + 1 < count) {
+                            int port; server = int.TryParse(Marshal.PtrToStringUni(Marshal.ReadIntPtr(argv, (++i) * IntPtr.Size)), out port) && port > 0 && port <= 65535;
+                        }
+                        if (arg.Equals("-projectPath", StringComparison.OrdinalIgnoreCase) && i + 1 < count)
+                            project = Marshal.PtrToStringUni(Marshal.ReadIntPtr(argv, (++i) * IntPtr.Size));
+                    }
+                    return (worker || (adb2 && workerName && server)) && project != null && string.Equals(Path.GetFullPath(project).TrimEnd('\\', '/'),
+                        RgbmBindingsLoader.ProjectRoot.TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase);
+                } catch (Exception) { return false; }
+                finally { if (argv != IntPtr.Zero) LocalFree(argv); if (memory != IntPtr.Zero) Marshal.FreeHGlobal(memory); CloseHandle(process); }
+            }
 
             // 注入指定 PID（幂等；失败时移出集合以便下次重试）
             public static bool InjectIfNeeded(uint pid)
             {
+                long creation;
+                using (var process = System.Diagnostics.Process.GetProcessById((int)pid)) creation = process.StartTime.ToUniversalTime().ToFileTimeUtc();
+                string identity = pid + "." + creation;
+                Attempt attempt;
                 lock (s_lock)
                 {
-                    if (!s_injected.Add(pid))
-                        return true;  // 已注入
+                    if (s_attempts.TryGetValue(identity, out attempt)) {
+                        if (!attempt.Ready) attempt.Ready = Confirm(attempt);
+                        return attempt.Ready;
+                    }
+                    attempt = new Attempt { Pid = pid, Creation = creation };
+                    s_attempts.Add(identity, attempt);
                 }
-                bool ok = Inject(pid);
-                if (!ok)
-                {
-                    lock (s_lock)
-                        s_injected.Remove(pid);
-                }
-                return ok;
+                bool started = false;
+                try { attempt.Ready = Inject(attempt, out started); return attempt.Ready; }
+                finally { if (!started) lock (s_lock) s_attempts.Remove(identity); }
             }
 
             // 查询 PID 是否已注入（测试/诊断用）
             public static bool IsInjected(uint pid)
             {
-                lock (s_lock)
-                    return s_injected.Contains(pid);
+                return InjectIfNeeded(pid);
+            }
+            private static bool Confirm(Attempt attempt)
+            {
+                if (attempt.Hash == null) return false;
+                if (RgbmBindingsLoader.Enabled) {
+                    string path = RgbmBindingsLoader.ReportPath(attempt.Pid, attempt.Creation);
+                    if (!File.Exists(path)) return false;
+                    var report = JsonUtility.FromJson<RgbmBindingsLoader.RuntimeReport>(File.ReadAllText(path));
+                    return report != null && report.artifact_kind == "rgbm_runtime_bootstrap" && report.pid == attempt.Pid &&
+                        report.creation_filetime == attempt.Creation.ToString() && report.exe_sha256 == attempt.Hash &&
+                        string.Equals(report.hook_module, Path.Combine(_pluginDir, "bc7_rdo_hook.dll"), StringComparison.OrdinalIgnoreCase) &&
+                        report.state == "Ready" && report.hook_installed;
+                }
+                // HMODULE is 64-bit; GetExitCodeThread's DWORD is not a module handle.
+                IntPtr snapshot = CreateToolhelp32Snapshot(0x8 | 0x10, attempt.Pid);
+                if (snapshot == IntPtr.Zero || snapshot == new IntPtr(-1)) return false;
+                try {
+                    var entry = new ModuleEntry32W { size = (uint)Marshal.SizeOf(typeof(ModuleEntry32W)) };
+                    bool next = Module32FirstW(snapshot, ref entry);
+                    while (next) {
+                        if (string.Equals(entry.path, Path.Combine(_pluginDir, "bc7_rdo_hook.dll"), StringComparison.OrdinalIgnoreCase)) return true;
+                        next = Module32NextW(snapshot, ref entry);
+                    }
+                    return false;
+                } finally { CloseHandle(snapshot); }
+            }
+            private static IntPtr RemoteLoadLibrary(uint pid)
+            {
+                var local = GetProcAddress(GetModuleHandle("kernel32.dll"), "LoadLibraryW");
+                IntPtr owner;
+                if (local == IntPtr.Zero || !GetModuleHandleExW(6, local, out owner)) return IntPtr.Zero;
+                var ownerPath = new System.Text.StringBuilder(32768);
+                if (GetModuleFileNameW(owner, ownerPath, 32768) == 0) return IntPtr.Zero;
+                long offset = local.ToInt64() - owner.ToInt64();
+                IntPtr snapshot = CreateToolhelp32Snapshot(0x8 | 0x10, pid);
+                if (snapshot == IntPtr.Zero || snapshot == new IntPtr(-1)) return IntPtr.Zero;
+                try {
+                    var entry = new ModuleEntry32W { size = (uint)Marshal.SizeOf(typeof(ModuleEntry32W)) };
+                    bool next = Module32FirstW(snapshot, ref entry);
+                    while (next) {
+                        if (string.Equals(entry.path, ownerPath.ToString(), StringComparison.OrdinalIgnoreCase) && offset >= 0 && offset < entry.baseSize)
+                            return new IntPtr(entry.baseAddress.ToInt64() + offset);
+                        next = Module32NextW(snapshot, ref entry);
+                    }
+                    return IntPtr.Zero;
+                } finally { CloseHandle(snapshot); }
             }
 
-            // CreateRemoteThread + LoadLibraryW 注入（与注入器 exe 同理；
-            // kernel32 基址在同一次系统启动的所有进程中相同）
-            private static bool Inject(uint pid)
+            // Resolve the actual owner module/RVA in the target (including a
+            // forwarded KernelBase export); do not assume equal ASLR addresses.
+            private static bool Inject(Attempt attempt, out bool started)
             {
+                started = false;
+                uint pid = attempt.Pid;
                 if (_pluginDir.Length == 0)
                     return false;
                 string hookDll = _pluginDir + "\\bc7_rdo_hook.dll";
                 if (!File.Exists(hookDll))
                     return false;
 
-                IntPtr hProc = OpenProcess(PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION |
+                IntPtr hProc = OpenProcess(PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | SYNCHRONIZE |
                                            PROCESS_VM_OPERATION | PROCESS_VM_READ | PROCESS_VM_WRITE,
                                            false, pid);
                 if (hProc == IntPtr.Zero)
@@ -632,19 +800,30 @@ namespace Bc7Rdo
                 }
                 try
                 {
+                    long creation, exited, kernel, user;
+                    if (!GetProcessTimes(hProc, out creation, out exited, out kernel, out user) || creation != attempt.Creation) return false;
+                    var image = new System.Text.StringBuilder(32768); uint size = 32768;
+                    if (!QueryFullProcessImageNameW(hProc, 0, image, ref size)) return false;
+                    string cache, error;
+                    if (!RgbmBindingsLoader.Prepare(image.ToString(), out cache, out error)) {
+                        Debug.LogWarning("[Bc7Rdo] worker cache rejected PID=" + pid + " " + error); return false;
+                    }
+                    attempt.Hash = RgbmBindingsLoader.Enabled ? RgbmBindingsLoader.HashFile(image.ToString()) : "";
                     byte[] path = System.Text.Encoding.Unicode.GetBytes(hookDll + "\0");
                     IntPtr remote = VirtualAllocEx(hProc, IntPtr.Zero, (UIntPtr)path.Length,
                                                    MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
                     if (remote == IntPtr.Zero)
                         return false;
 
-                    if (!WriteProcessMemory(hProc, remote, path, path.Length, out _))
+                    IntPtr written;
+                    if (!WriteProcessMemory(hProc, remote, path, path.Length, out written) || written.ToInt64() != path.Length)
                     {
                         VirtualFreeEx(hProc, remote, UIntPtr.Zero, MEM_RELEASE);
                         return false;
                     }
 
-                    IntPtr loadLibW = GetProcAddress(GetModuleHandle("kernel32.dll"), "LoadLibraryW");
+                    IntPtr loadLibW = RemoteLoadLibrary(pid);
+                    if (loadLibW == IntPtr.Zero) { VirtualFreeEx(hProc, remote, UIntPtr.Zero, MEM_RELEASE); return false; }
                     IntPtr hThread = CreateRemoteThread(hProc, IntPtr.Zero, UIntPtr.Zero,
                                                         loadLibW, remote, 0, out _);
                     if (hThread == IntPtr.Zero)
@@ -653,16 +832,26 @@ namespace Bc7Rdo
                         return false;
                     }
 
-                    WaitForSingleObject(hThread, 10000);
-                    GetExitCodeThread(hThread, out uint code);
+                    started = true;
+                    uint wait = WaitForSingleObject(hThread, 10000);
                     CloseHandle(hThread);
+                    // A timed-out remote thread may still read its argument.
+                    // Retain it to process exit and do not inject this identity again.
+                    if (wait != 0) {
+                        Debug.LogWarning("[Bc7Rdo] worker LoadLibrary still pending PID=" + pid + "; argument retained until process exit");
+                        return false;
+                    }
                     VirtualFreeEx(hProc, remote, UIntPtr.Zero, MEM_RELEASE);
-
-                    bool ok = code != 0 && code != STILL_ACTIVE;
+                    bool ok = false;
+                    for (int i = 0; i < 100; ++i) {
+                        if (Confirm(attempt)) { ok = true; break; }
+                        if (WaitForSingleObject(hProc, 0) == 0) break;
+                        Thread.Sleep(100);
+                    }
                     if (ok)
-                        Debug.Log("[Bc7Rdo] worker 注入成功 PID=" + pid + " hook=" + hookDll);
+                        Debug.Log("[Bc7Rdo] worker initialized PID=" + pid + " creation=" + attempt.Creation + " exe_sha256=" + attempt.Hash);
                     else
-                        Debug.LogWarning("[Bc7Rdo] worker 注入 LoadLibrary 返回 0 PID=" + pid);
+                        Debug.LogWarning("[Bc7Rdo] worker classification not Ready PID=" + pid + "; inspect its runtime report, restart worker after fixing dependencies");
                     return ok;
                 }
                 finally
@@ -766,6 +955,8 @@ namespace Bc7Rdo
         private static readonly string[] s_editorOnlyDlls =
         {
             "bc7_rdo_hook.dll",
+            "bc7_rgbm_coordinator.dll",
+            "bc7_rgbm_loader_gate.dll",
             "oo2tex_win64_2.9.16.dll",
             "oo2texrt_win64_2.9.16.dll",
         };
@@ -787,11 +978,15 @@ namespace Bc7Rdo
                 PluginImporter imp = AssetImporter.GetAtPath(path) as PluginImporter;
                 if (imp == null)
                     continue;
-                if (!imp.GetCompatibleWithAnyPlatform() && imp.GetCompatibleWithEditor())
+                if (!imp.GetCompatibleWithAnyPlatform() && imp.GetCompatibleWithEditor() && !imp.isPreloaded &&
+                    imp.GetEditorData("CPU") == "x86_64" && imp.GetEditorData("OS") == "Windows")
                     continue;  // 已是仅编辑器设置
 
                 imp.SetCompatibleWithAnyPlatform(false);
                 imp.SetCompatibleWithEditor(true);
+                imp.isPreloaded = false;
+                imp.SetEditorData("CPU", "x86_64");
+                imp.SetEditorData("OS", "Windows");
                 imp.SaveAndReimport();
                 Debug.Log("[Bc7Rdo] " + System.IO.Path.GetFileName(path) +
                           " 已设为仅编辑器平台（不会打进玩家包）: " + path);
@@ -808,5 +1003,107 @@ namespace Bc7Rdo
             }
             return false;
         }
+    }
+
+    // Current-exe binding preparation and runtime reports share the loader file.
+    internal static class RgbmBindingsLoader
+    {
+        internal static string ProjectRoot;
+        internal static string PluginDirectory;
+        internal static bool Enabled;
+        internal static string CacheDirectory { get { return Path.Combine(ProjectRoot, "Library/Bc7Rdo/HookBindings"); } }
+        internal static string HashFile(string path)
+        {
+            using (var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            using (var sha = SHA256.Create())
+                return BitConverter.ToString(sha.ComputeHash(file)).Replace("-", "");
+        }
+        internal static bool ReadEnabled(string path)
+        {
+            if (!File.Exists(path)) return false;
+            bool enabled = false;
+            foreach (var raw in File.ReadAllLines(path))
+            {
+                var line = raw.Split('#', ';')[0].Trim(); var split = line.IndexOf('=');
+                if (split < 0 || !line.Substring(0, split).Trim().Equals("unity_rgbm_context_hooks", StringComparison.OrdinalIgnoreCase)) continue;
+                int value; if (int.TryParse(line.Substring(split + 1).Trim(), out value)) enabled = value != 0;
+            }
+            return enabled;
+        }
+        internal static bool Prepare(string exe, out string cache, out string error)
+        {
+            cache = ""; error = "";
+            if (!Enabled) return true;
+            try
+            {
+                exe = Path.GetFullPath(exe); string hash = HashFile(exe);
+                Directory.CreateDirectory(CacheDirectory);
+                cache = Path.Combine(CacheDirectory, hash + ".v1.bindings");
+                string tools = Path.Combine(PluginDirectory, "RgbmBindings~");
+                string validator = Path.Combine(tools, "bc7_rgbm_bindings.exe");
+                if (!File.Exists(validator)) throw new IOException("binding validator missing: " + validator);
+                // Per-project, per-exe writer lease; workers never acquire it or write bindings.
+                string projectKey;
+                using (var sha = SHA256.Create()) projectKey = BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(CacheDirectory.ToUpperInvariant()))).Replace("-", "");
+                using (var lease = new Mutex(false, "Local\\Bc7RgbmBindings_" + projectKey + "_" + hash))
+                {
+                    bool acquired = false;
+                    try
+                    {
+                        try { acquired = lease.WaitOne(30000); } catch (AbandonedMutexException) { acquired = true; }
+                        if (!acquired) throw new TimeoutException("binding cache writer busy");
+                        string report = Path.Combine(CacheDirectory, hash + ".validation.json");
+                        string verify = "--mode verify --exe " + Quote(exe) + " --cache " + Quote(cache) + " --report " + Quote(report);
+                        if (File.Exists(cache) && Run(validator, verify, hash + ".verify.log") == 0) return true;
+                        string pdb = Path.Combine(Path.GetDirectoryName(exe), "unity_x64.pdb");
+                        if (File.Exists(pdb))
+                        {
+                            string resolver = Path.Combine(tools, "bc7_rgbm_resolver.exe"), dia = Path.Combine(tools, "msdia140.dll");
+                            if (!File.Exists(resolver) || !File.Exists(dia)) throw new IOException("private PDB resolver/DIA dependency missing");
+                            string evidence = Path.Combine(CacheDirectory, hash + ".evidence.json");
+                            int result = Run(resolver, "--exe " + Quote(exe) + " --pdb " + Quote(pdb) + " --dia " + Quote(dia) +
+                                " --cache " + Quote(cache) + " --report " + Quote(evidence), hash + ".pdb.log");
+                            if (result != 0) throw new IOException("PDB/contract rejected: " + result + " report=" + evidence);
+                        }
+                        else if (Run(validator, "--mode scan --exe " + Quote(exe) + " --cache " + Quote(cache) + " --report " + Quote(report), hash + ".scan.log") != 0)
+                            throw new IOException("bounded scan rejected: " + report);
+                        if (Run(validator, verify, hash + ".verify.log") != 0) throw new IOException("published cache failed verification");
+                        return true;
+                    }
+                    finally { if (acquired) lease.ReleaseMutex(); }
+                }
+            }
+            catch (Exception ex) { error = ex.Message; return false; }
+        }
+        private static string Quote(string value)
+        {
+            // These are file paths, passed directly to CreateProcess, not a shell.
+            if (value.IndexOf('"') >= 0 || value.EndsWith("\\", StringComparison.Ordinal)) throw new ArgumentException("invalid file argument");
+            return "\"" + value + "\"";
+        }
+        private static int Run(string exe, string arguments, string log)
+        {
+            var text = new StringBuilder(); var gate = new object();
+            var start = new System.Diagnostics.ProcessStartInfo(exe, arguments) { UseShellExecute = false, CreateNoWindow = true,
+                RedirectStandardOutput = true, RedirectStandardError = true, WorkingDirectory = Path.GetDirectoryName(exe) };
+            using (var process = new System.Diagnostics.Process { StartInfo = start })
+            {
+                process.OutputDataReceived += (s, e) => { if (e.Data != null) lock (gate) text.AppendLine(e.Data); };
+                process.ErrorDataReceived += (s, e) => { if (e.Data != null) lock (gate) text.AppendLine(e.Data); };
+                process.Start(); process.BeginOutputReadLine(); process.BeginErrorReadLine();
+                if (!process.WaitForExit(60000)) { process.Kill(); process.WaitForExit(3000); throw new TimeoutException("binding helper timeout"); }
+                process.WaitForExit(); // Drain asynchronous pipes only after real exit.
+                File.WriteAllText(Path.Combine(CacheDirectory, log), text.ToString(), new UTF8Encoding(false));
+                return process.ExitCode;
+            }
+        }
+        [Serializable] internal sealed class RuntimeReport
+        {
+            public string artifact_kind, creation_filetime, state, exe_sha256, reason, hook_module;
+            public uint pid;
+            public bool hook_installed, asset_import_worker;
+        }
+        internal static string ReportPath(uint pid, long creation)
+        { return Path.Combine(CacheDirectory, pid + "." + creation + ".runtime.json"); }
     }
 }

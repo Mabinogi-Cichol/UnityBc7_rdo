@@ -1,6 +1,7 @@
 param(
     [string]$Configuration = "Release",
-    [string]$UnityDir = ""
+    [string]$UnityDir = "",
+    [string]$DiaDll = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -89,16 +90,26 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 # ---- 注入版（外挂）组件 ----
+# Runtime validates P1 contracts; coordinator transactions stay in their own DLL.
+& (Join-Path $PSScriptRoot 'build_rgbm_tools.ps1') -VsPath $vsPath
+& (Join-Path $PSScriptRoot 'build_rgbm_coordinator.ps1') -VsPath $vsPath
 # hook DLL：注入 Unity 进程后对 compress_bc7e.dll 导出桩做 inline detour + RDO
 $hookSources = @(
     (Join-Path $srcDir "bc7_hook_dll.cpp"),
+    (Join-Path $srcDir "rgbm_hook_runtime.cpp"),
+    (Join-Path $srcDir "rgbm_hook_install.cpp"),
+    (Join-Path $srcDir "rgbm_hook_bootstrap.cpp"),
+    (Join-Path $srcDir "rgbm_hook_bindings.cpp"),
+    (Join-Path $srcDir "rgbm_hook_contract.cpp"),
+    (Join-Path $srcDir "rgbm_binding_cache.cpp"),
     (Join-Path $srcDir "oodle_hook.cpp"),
     (Join-Path $rdo "ert.cpp"),
     (Join-Path $rdo "bc7decomp.cpp")
-) -join " "
+) | ForEach-Object { '"' + $_ + '"' }
+$hookSources = $hookSources -join ' '
 
 Write-Host "Building bc7_rdo_hook.dll ..."
-$clHook = "call `"$vcvars`" >nul 2>&1 && cl /nologo /O2 /EHsc /std:c++17 /utf-8 /MT /DNOMINMAX /D_CRT_SECURE_NO_WARNINGS /I `"$include`" /I `"$srcDir`" /I `"$testenvInclude`" /LD /Fo$out\ $hookSources /Fe:`"$out\bc7_rdo_hook.dll`" /link /NOLOGO"
+$clHook = "call `"$vcvars`" >nul 2>&1 && cl /nologo /O2 /EHsc /std:c++17 /utf-8 /MT /DNOMINMAX /D_CRT_SECURE_NO_WARNINGS /I `"$include`" /I `"$srcDir`" /I `"$vendor\detours\src`" /I `"$testenvInclude`" /LD /Fo`"$out\\`" $hookSources /Fe:`"$out\bc7_rdo_hook.dll`" /link /NOLOGO `"$out\rgbm-portability\detours.lib`""
 cmd /c $clHook
 if ($LASTEXITCODE -ne 0) {
     throw "hook DLL build failed with exit code $LASTEXITCODE"
@@ -134,10 +145,20 @@ $pluginOutDir = Join-Path $out "editor-plugin\Bc7Rdo"
 New-Item -ItemType Directory -Force -Path $pluginOutDir | Out-Null
 
 Copy-Item -LiteralPath (Join-Path $pluginSrcDir "hook_loader.cs") -Destination $pluginOutDir -Force
+foreach ($name in @('rgbm_bindings_loader.cs','rgbm_bindings_loader.cs.meta')) {
+    $legacy = Join-Path $pluginOutDir $name
+    if (Test-Path -LiteralPath $legacy) { Remove-Item -LiteralPath $legacy }
+}
 Copy-Item -LiteralPath (Join-Path $pluginSrcDir "Bc7Rdo.Editor.asmdef") -Destination $pluginOutDir -Force
 Copy-Item -LiteralPath (Join-Path $out "bc7_rdo_hook.dll") -Destination $pluginOutDir -Force
+foreach ($dependency in @('bc7_rgbm_coordinator.dll', 'bc7_rgbm_loader_gate.dll')) {
+    Copy-Item -LiteralPath (Join-Path $out "rgbm-portability\coordinator\$dependency") -Destination $out -Force
+    Copy-Item -LiteralPath (Join-Path $out "rgbm-portability\coordinator\$dependency") -Destination $pluginOutDir -Force
+}
 Copy-Item -LiteralPath (Join-Path $root "bc7_rdo_config.txt") -Destination $pluginOutDir -Force
 Copy-Item -LiteralPath (Join-Path $pluginSrcDir "README.md") -Destination (Join-Path $out "editor-plugin") -Force
+if (-not $DiaDll) { $DiaDll = Join-Path $vsPath 'DIA SDK\bin\amd64\msdia140.dll' }
+& (Join-Path $PSScriptRoot 'stage_rgbm_resolver.ps1') -DiaDll $DiaDll -Destination (Join-Path $pluginOutDir 'RgbmBindings~')
 
 # ---- Oodle Texture 编码器 DLL（Epic 专有，仅本地暂存，绝不进 release）----
 # 这两个 DLL 是 Epic 专有二进制：不随仓库分发（oodle_testenv\.gitignore 已忽略
