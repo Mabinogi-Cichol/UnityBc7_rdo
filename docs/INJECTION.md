@@ -1,5 +1,28 @@
 # 外挂形式（Editor Plugin / Hook DLL）实现说明与方案评估
 
+## v0.5.0 当前 RGBM 路径
+
+下面的导出桩方案评估及单函数流程描述的是基础 BC7 RDO。v0.5.0 的 RGBM 分类另有两个 Unity 私有语义入口，使用独立协调器／gate 的 Detours 事务，不能用固定长度导出桩 patch 代替。当前部署须完整保留：
+
+```text
+Bc7Rdo/
+  hook_loader.cs                  单一 C# 加载器，含绑定准备与 Worker 协调
+  Bc7Rdo.Editor.asmdef
+  bc7_rdo_hook.dll
+  bc7_rgbm_coordinator.dll
+  bc7_rgbm_loader_gate.dll
+  bc7_rdo_config.txt
+  RgbmBindings~/                  resolver、认证器、私有 release DIA、来源与许可
+  Licenses~/                      bc7enc_rdo 和 Detours 许可（发行包）
+```
+
+1. 设置 `unity_rgbm_context_hooks=1` 并重新启动目标工程，loader 在加载主 DLL 前准备按实际 exe SHA256 区分的 Library 绑定缓存。匹配 PDB 优先，缺少 PDB 才尝试受限扫描；候选必须完整通过身份、ABI 与语义认证。
+2. 主进程在 `DllMain` 外独立复核当前映像及绑定，协调器通过 gate 安装两个语义 Hook；BC7 导出 Hook 仍独立等待 `compress_bc7e.dll`。
+3. Worker 监控核对直接父子关系、工程路径、Worker 命令行、exe 及 PID／创建时间，先准备该 exe 的缓存，再完成注入并检查原生引导报告。只有 `Ready` 和 `hook_installed=true` 才算成功；x64 远端线程 DWORD 返回值不作模块句柄。
+4. 并发 Job 经作用域槽和回调 TLS 关联 usage，不读取固定 JobData 偏移。Unknown／Unavailable 的启用分类直接走原生 BC7，严重事务恢复错误显式 Faulted 并非零退出。
+
+已验收 Windows x64 Unity 2022.3.62f1／f2 的 Editor、batchmode、真实 Worker；其他构建不保证适配。配置默认仍关闭 RGBM 语义 Hook。升级、缓存、日志、质量／性能边界见[插件说明](../src/editor_plugin/README.md)及 [P5 实测](features/rgbm-hook-portability-acceptance.md)。无 VS 环境未测试，额外 Unity 内先 Ready 后首次 BC7 加载场景未实测。关闭 Editor／Worker 后才能替换或删除 DLL，不支持原生热卸载。
+
 本文档回答两个问题：
 
 1. 在不修改 Unity 安装目录的前提下实现相同 BC7 RDO 效果，可选方案

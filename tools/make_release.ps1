@@ -5,17 +5,41 @@ param(
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $PSScriptRoot
+if ($Version -notmatch '^v\d+\.\d+\.\d+$') { throw 'Version must be vMAJOR.MINOR.PATCH' }
 $out  = Join-Path $root "out"
 $releaseDir = Join-Path $root "release\$Version"
+
+function Reset-ReleaseDirectory([string]$Path) {
+    $resolved = [IO.Path]::GetFullPath($Path)
+    $allowed = [IO.Path]::GetFullPath((Join-Path $root 'release')) + '\'
+    if (-not $resolved.StartsWith($allowed, [StringComparison]::OrdinalIgnoreCase)) { throw 'Release path outside repository release directory' }
+    if (Test-Path -LiteralPath $resolved) { Remove-Item -LiteralPath $resolved -Recurse -Force }
+    New-Item -ItemType Directory -Force -Path $resolved | Out-Null
+}
+
+function Write-Checksums([string]$Directory) {
+    $base = [IO.Path]::GetFullPath($Directory).TrimEnd('\')
+    $records = foreach ($file in @(Get-ChildItem -LiteralPath $base -File -Recurse | Sort-Object FullName)) {
+        $relative = $file.FullName.Substring($base.Length + 1).Replace('\','/')
+        '{0}  {1}' -f (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash, $relative
+    }
+    Set-Content -LiteralPath (Join-Path $base 'SHA256SUMS.txt') -Value $records -Encoding ascii
+}
+
+function Copy-Licenses([string]$Directory, [switch]$Detours) {
+    $licenses = Join-Path $Directory 'Licenses~'
+    New-Item -ItemType Directory -Force -Path $licenses | Out-Null
+    Copy-Item -LiteralPath (Join-Path $root 'vendor\bc7enc_rdo\LICENSE') -Destination (Join-Path $licenses 'BC7ENC-RDO-LICENSE.txt')
+    if ($Detours) {
+        Copy-Item -LiteralPath (Join-Path $root 'vendor\detours\LICENSE.md') -Destination (Join-Path $licenses 'DETOURS-LICENSE.md')
+    }
+}
 
 # 1. 先构建
 & (Join-Path $PSScriptRoot "build.ps1")
 
 # 2. 组装 release 目录（先清空，避免残留旧版文件）
-if (Test-Path -LiteralPath $releaseDir) {
-    Remove-Item -LiteralPath $releaseDir -Recurse -Force
-}
-New-Item -ItemType Directory -Force -Path $releaseDir | Out-Null
+Reset-ReleaseDirectory $releaseDir
 
 Copy-Item -LiteralPath (Join-Path $out "compress_bc7e.dll") -Destination $releaseDir -Force
 Copy-Item -LiteralPath (Join-Path $out "exports.txt") -Destination $releaseDir -Force
@@ -86,13 +110,9 @@ debug=0                     调试输出
 "@
 Set-Content -LiteralPath (Join-Path $releaseDir "README-release.txt") -Value $releaseReadme -Encoding utf8
 
-# 3. SHA256 校验
-$files = Get-ChildItem -LiteralPath $releaseDir -File | Sort-Object Name
-$lines = foreach ($f in $files) {
-    $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $f.FullName).Hash
-    "{0}  {1}" -f $hash, $f.Name
-}
-Set-Content -LiteralPath (Join-Path $releaseDir "SHA256SUMS.txt") -Value $lines -Encoding ascii
+# 3. 许可证与递归 SHA256 校验
+Copy-Licenses $releaseDir
+Write-Checksums $releaseDir
 
 # 4. 压缩
 $zip = Join-Path $root "release\compress_bc7e_rdo-$Version-win-x64.zip"
@@ -106,14 +126,21 @@ Compress-Archive -Path (Join-Path $releaseDir "*") -DestinationPath $zip -Compre
 # 5. Editor Plugin 发布包（放进工程 Assets 下即生效）
 # ---------------------------------------------------------------------------
 $pluginDir = Join-Path $root "release\$Version-editor-plugin"
-if (Test-Path -LiteralPath $pluginDir) {
-    Remove-Item -LiteralPath $pluginDir -Recurse -Force
-}
-New-Item -ItemType Directory -Force -Path $pluginDir | Out-Null
+Reset-ReleaseDirectory $pluginDir
 
 Copy-Item -LiteralPath (Join-Path $out "editor-plugin\Bc7Rdo\hook_loader.cs") -Destination $pluginDir -Force
 Copy-Item -LiteralPath (Join-Path $out "editor-plugin\Bc7Rdo\Bc7Rdo.Editor.asmdef") -Destination $pluginDir -Force
 Copy-Item -LiteralPath (Join-Path $out "editor-plugin\Bc7Rdo\bc7_rdo_hook.dll") -Destination $pluginDir -Force
+foreach ($dependency in @('bc7_rgbm_coordinator.dll','bc7_rgbm_loader_gate.dll')) {
+    Copy-Item -LiteralPath (Join-Path $out "editor-plugin\Bc7Rdo\$dependency") -Destination $pluginDir -Force
+}
+$bindingSource = Join-Path $out 'editor-plugin\Bc7Rdo\RgbmBindings~'
+$bindingTarget = Join-Path $pluginDir 'RgbmBindings~'
+New-Item -ItemType Directory -Force -Path $bindingTarget | Out-Null
+foreach ($dependency in @('bc7_rgbm_resolver.exe','bc7_rgbm_bindings.exe','msdia140.dll',
+    'DETOURS-LICENSE.md','DEPENDENCY-NOTICE.txt','dependency-manifest.json')) {
+    Copy-Item -LiteralPath (Join-Path $bindingSource $dependency) -Destination $bindingTarget -Force
+}
 Copy-Item -LiteralPath (Join-Path $out "editor-plugin\Bc7Rdo\bc7_rdo_config.txt") -Destination $pluginDir -Force
 Copy-Item -LiteralPath (Join-Path $out "editor-plugin\README.md") -Destination (Join-Path $pluginDir "README-editor-plugin.txt") -Force
 
@@ -121,17 +148,13 @@ Copy-Item -LiteralPath (Join-Path $out "editor-plugin\README.md") -Destination (
 # 仅可手动放置于 oodle_testenv\bin\ 供本地暂存，永不进入 release）。正常
 # 流程下 release 目录是全新创建的，不应出现该文件；若出现说明打包流程有
 # 泄漏，直接报错阻止发布。
-$leakedOodle = Get-ChildItem -LiteralPath $pluginDir -File -Filter "oo2tex*.dll" -ErrorAction SilentlyContinue
+$leakedOodle = Get-ChildItem -LiteralPath $pluginDir -File -Recurse -Filter "oo2tex*.dll" -ErrorAction SilentlyContinue
 if ($leakedOodle) {
     throw "内部错误：editor-plugin 发布目录意外包含 Oodle DLL：$($leakedOodle.Name)。Oodle DLL 仅本地暂存，禁止打进 release。"
 }
 
-$files3 = Get-ChildItem -LiteralPath $pluginDir -File | Sort-Object Name
-$lines3 = foreach ($f in $files3) {
-    $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $f.FullName).Hash
-    "{0}  {1}" -f $hash, $f.Name
-}
-Set-Content -LiteralPath (Join-Path $pluginDir "SHA256SUMS.txt") -Value $lines3 -Encoding ascii
+Copy-Licenses $pluginDir -Detours
+Write-Checksums $pluginDir
 
 $zip3 = Join-Path $root "release\compress_bc7e_rdo-editor-plugin-$Version-win-x64.zip"
 if (Test-Path -LiteralPath $zip3) {

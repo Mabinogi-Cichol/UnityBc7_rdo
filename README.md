@@ -142,6 +142,13 @@ python tests\test_compat.py
    同样生效。
 
 **编码器切换**：插件默认使用 `bc7enc_rdo`（ERT 后处理，开源、随包分发）。
+v0.5.0 的 RGBM 可移植插件包含协调器、gate 和
+`RgbmBindings~` 私有依赖目录，复制时必须保留。加载器自动准备按 exe SHA256
+区分的工程 Library 缓存，各进程重新认证入口。已验证 Windows x64 的 Unity
+2022.3.62f1／f2；要启用 RGBM 分流，关闭工程，将 `unity_rgbm_context_hooks=1`
+后重开。默认配置仍为 `0`。启动、升级、状态和支持边界见
+[插件说明](src/editor_plugin/README.md)，实际验收见 [P5 报告](docs/features/rgbm-hook-portability-acceptance.md)。
+
 在插件目录 `bc7_rdo_config.txt` 中把 `encoder` 改为 `oodle` 即可切换到
 **Oodle Texture RDO**（需把两个 Epic 专有 DLL `oo2tex_win64_2.9.16.dll` 与
 `oo2texrt_win64_2.9.16.dll` 放进插件目录，见下方许可说明）。两种编码器

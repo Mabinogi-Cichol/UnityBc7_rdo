@@ -9,6 +9,7 @@
 - PowerShell 5.1+（推荐 PowerShell 7）
 - 仅运行测试时需要 Python 3.10+（可选，测试报告与对比图依赖 PIL；无 PIL 时测试会失败）
 - `vendor/bc7enc_rdo/` 已随仓库提供（构建所需的三方源码）
+- RGBM 插件构建还需要 VS 的 DIA SDK 开发头文件／库及 x64 release `msdia140.dll`；Detours 4.0.1 锁定源码已随仓库提供。`tools/build.ps1 -DiaDll <路径>` 可指定用于暂存的 release DIA。
 - 原 DLL 副本：`vendor/compress_bc7e_original.dll` 不纳入 git，构建脚本会自动检测
   Unity 安装目录并恢复：
   1. 优先使用**已替换目录**里的 `compress_bc7e_original.dll`（保证版本精确匹配）；
@@ -50,6 +51,7 @@ powershell -ExecutionPolicy Bypass -File tools\enable_unity_rdo.ps1
 | `out/compress_bc7e_original.dll` | Unity 原 DLL 的项目内副本（转发/回退目标） |
 | `out/exports.txt` | 导出表 |
 | `out/test_report.json` | 运行测试后的验证报告 |
+| `out/editor-plugin/Bc7Rdo/` | 单个 C# loader、三个原生 DLL、配置、asmdef，以及 `RgbmBindings~` 私有工具／DIA／依赖说明 |
 
 ## 4. 运行测试
 
@@ -85,10 +87,18 @@ pip install pillow
 ## 6. 发布 Release 包
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File tools\make_release.ps1 -Version v0.1.0
+powershell -ExecutionPolicy Bypass -File tools\make_release.ps1 -Version v0.5.0
 ```
 
-脚本会先执行构建，然后在 `release\v0.1.0\` 生成：
+脚本会先执行构建，然后在 `release\v0.5.0\` 生成壳 DLL 内容，并在 `release\v0.5.0-editor-plugin\` 生成完整 RGBM 插件。两个包各有递归 SHA256 清单和开源许可证；DIA 依赖说明保留 Microsoft 再分发条件。不打包 Oodle、Unity 原 DLL／exe／PDB、测试资源、日志或 Library 缓存。
+
+验证实际 ZIP 内容与递归校验清单：
+
+```powershell
+python tools\verify_release.py --version v0.5.0
+```
+
+壳 DLL 包内容：
 
 - `compress_bc7e.dll`
 - `enable_unity_rdo.ps1`（安装/回滚脚本）
