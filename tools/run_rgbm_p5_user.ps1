@@ -1,5 +1,6 @@
 param([string]$ProjectPath='E:\Unity\StarWings\ClientDevelopment',
-      [string]$UnityExe='C:\Program Files\Unity\Hub\Editor\2022.3.62f2\Editor\Unity.exe')
+      [string]$UnityExe='C:\Program Files\Unity\Hub\Editor\2022.3.62f2\Editor\Unity.exe',
+      [string]$PluginSource='')
 $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $PSScriptRoot
 $project=(Resolve-Path -LiteralPath $ProjectPath).Path
@@ -9,7 +10,8 @@ foreach($process in @(Get-CimInstance Win32_Process -Filter "Name='Unity.exe'"))
     }
 }
 $output=Join-Path $root 'out\rgbm-portability\acceptance'
-$snapshot=Join-Path $output 'Bc7Rdo'
+$snapshot=if($PluginSource) { (Resolve-Path -LiteralPath $PluginSource).Path } else { Join-Path $root 'out\editor-plugin\Bc7Rdo' }
+if(-not (Test-Path -LiteralPath (Join-Path $snapshot 'hook_loader.cs'))) { throw 'Build or specify the plugin to validate first' }
 $plugin=Join-Path $project 'Assets\Plugins\Bc7Rdo'
 $driver=Join-Path $plugin 'RgbmP5Validation.cs'
 if(Test-Path -LiteralPath $driver) { throw 'A P5 driver already exists; refusing to overwrite it' }
@@ -26,7 +28,8 @@ foreach($file in $deployFiles) {
     $relative=$file.FullName.Substring($snapshot.Length+1)
     $saved=Join-Path $backup $relative
     New-Item -ItemType Directory -Force (Split-Path -Parent $saved) | Out-Null
-    Copy-Item -LiteralPath (Join-Path $plugin $relative) -Destination $saved
+    $installed=Join-Path $plugin $relative
+    if(Test-Path -LiteralPath $installed) { Copy-Item -LiteralPath $installed -Destination $saved }
 }
 $config=Join-Path $plugin 'bc7_rdo_config.txt'
 $originalConfig=[IO.File]::ReadAllBytes($config); $configTime=[IO.File]::GetLastWriteTimeUtc($config)
@@ -48,7 +51,14 @@ try {
     if(-not $passed) {
         foreach($file in $deployFiles) {
             $relative=$file.FullName.Substring($snapshot.Length+1)
-            Copy-Item -LiteralPath (Join-Path $backup $relative) -Destination (Join-Path $plugin $relative) -Force
+            $saved=Join-Path $backup $relative
+            $installed=Join-Path $plugin $relative
+            if(Test-Path -LiteralPath $saved) { Copy-Item -LiteralPath $saved -Destination $installed -Force }
+            else {
+                foreach($created in @($installed,($installed+'.meta'))) {
+                    if(Test-Path -LiteralPath $created) { Remove-Item -LiteralPath $created }
+                }
+            }
         }
     }
     $after=@($protected | ForEach-Object { [pscustomobject]@{path=$_;sha256=(Get-FileHash -LiteralPath $_).Hash} })
