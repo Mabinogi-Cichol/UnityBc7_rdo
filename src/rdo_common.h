@@ -73,8 +73,8 @@ struct rdo_config
     // 原生返回地址栈。0=关闭；不参与编码决策。
     uint32_t trace_bc7_callstacks = 0;
 
-    // Unity 2022.3.62f1 专用的 RGBM 上下文探针/RDO 配置。启用上下文 hook
-    // 需要在 Unity 进程启动前设置；运行中热改为 1 不会补装 native hook。
+    // 经当前 exe 指纹与完整 v1 契约验证的 Unity RGBM 上下文。
+    // 开启但分类不可用时走原生 BC7；安装需加载器先准备匹配绑定缓存。
     bool unity_rgbm_context_hooks = false;
     // 仅 bc7enc_rdo/ERT 路径：以 Linear(sRGB)*M HDR 重建误差替换普通 RGBA MSE。
     // Oodle 自己完成 RDO，始终直接调用 Oodle，不使用该 ERT 选项。

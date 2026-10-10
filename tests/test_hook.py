@@ -16,6 +16,7 @@ patch 其 bc7elib_compress_blocks 导出桩；本测试把原 DLL 副本以
 """
 
 import ctypes
+import argparse
 import shutil
 import sys
 import tempfile
@@ -46,6 +47,9 @@ def config_text(lam, encoder="bc7enc_rdo", oodle_lambda=30):
 
 
 def main():
+    arguments = argparse.ArgumentParser()
+    arguments.add_argument("--late-module", action="store_true", help="Load hook before the BC7 module")
+    late_module = arguments.parse_args().late_module
     if not ORIGINAL_DLL.exists():
         sys.exit(f"原始 DLL 副本不存在: {ORIGINAL_DLL}")
     if not HOOK_DLL.exists():
@@ -66,13 +70,39 @@ def main():
         # 1. 基线：vendor 副本（模块名 compress_bc7e_original.dll，永远不会被挂钩）
         baseline = Bc7eDll(ORIGINAL_DLL, "baseline")
 
-        # 2. 以 "compress_bc7e.dll" 名字加载副本 -> 再加载 hook DLL -> 立即装钩
-        hooked = Bc7eDll(target_dll, "hooked")
-        ctypes.WinDLL(str(hook_dll))
-        time.sleep(0.3)  # 等 hook 日志落盘
+        # A separate process covers each module ordering; no hot removal.
+        if late_module:
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel.GetModuleHandleW.argtypes = [ctypes.c_wchar_p]
+            kernel.GetModuleHandleW.restype = ctypes.c_void_p
+            if kernel.GetModuleHandleW("compress_bc7e.dll"):
+                sys.exit("late-module precondition failed: BC7 already loaded")
+            hook = ctypes.WinDLL(str(hook_dll))
+            hook.Bc7RgbmGetState.restype = ctypes.c_uint32
+            bootstrap_log = work / "bc7_rdo_hook.log"
+            deadline = time.monotonic() + 5
+            bootstrap_completed = False
+            while time.monotonic() < deadline:
+                if bootstrap_log.exists():
+                    bootstrap_completed = "state=Disabled reason=" in bootstrap_log.read_text(encoding="utf-8", errors="replace")
+                if bootstrap_completed: break
+                time.sleep(0.05)
+            # Disabled config still completes bootstrap before the BC7 wait.
+            # This host cannot certify Unity private entries or claim Ready.
+            if not bootstrap_completed or hook.Bc7RgbmGetState() != 0 or kernel.GetModuleHandleW("compress_bc7e.dll"):
+                sys.exit("bootstrap did not finish independently of BC7")
+            hooked = Bc7eDll(target_dll, "hooked")
+        else:
+            hooked = Bc7eDll(target_dll, "hooked")
+            ctypes.WinDLL(str(hook_dll))
 
         # 3. 校验装钩日志
         log = work / "bc7_rdo_hook.log"
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if log.exists() and "install_hook: OK" in log.read_text(encoding="utf-8", errors="replace"):
+                break
+            time.sleep(0.05)
         if not log.exists():
             sys.exit("hook 日志不存在，装钩未触发: " + str(log))
         log_text = log.read_text(encoding="utf-8", errors="replace")
@@ -125,6 +155,17 @@ def main():
         print(f"  zlib9: {z_base} -> {z_rdo} B（-{100.0 * (z_base - z_rdo) / z_base:.2f}%）")
         print(f"  PSNR: {p_base:.3f} -> {p_rdo:.3f} dB")
 
+        # Context feature enabled after a process started without bindings:
+        # Unknown must bypass BOTH Oodle and ERT, even with nonzero lambdas.
+        for encoder in ("oodle", "bc7enc_rdo"):
+            cfg.write_text(config_text(4, encoder=encoder, oodle_lambda=30) +
+                           "\nunity_rgbm_context_hooks=1\nrgbm_oodle_lambda=10\n",
+                           encoding="utf-8")
+            if hooked.compress_bytes(pixels, num_blocks, params) != out_base:
+                sys.exit(f"Unknown context applied {encoder} instead of native BC7")
+        if "oodle:" in log.read_text(encoding="utf-8", errors="replace"):
+            sys.exit("Unknown context attempted to load Oodle")
+        print("Unknown 上下文: Oodle/ERT 非零 lambda 均与原生 BC7 逐字节一致")
         print("\nhook 测试全部通过")
     finally:
         shutil.rmtree(work, ignore_errors=True)

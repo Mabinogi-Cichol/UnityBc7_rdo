@@ -11,11 +11,11 @@
 //     bc7_rdo_config.txt 从本 DLL 所在目录热读，复用 rdo_common.h）。
 //
 // 约束与设计：
-//   - x64 only，/MT，无导出函数，提供 DllMain；
+//   - x64 only，/MT，提供 RGBM 初始化与状态导出，提供 DllMain；
 //   - 不做任何 IAT 修改，不 LoadLibrary 原 DLL（已加载模块本身即原 DLL，
 //     原函数指针从导出桩的 E9 rel32 目标解析）；
 //   - 本 DLL 永不卸载（注入方不会 FreeLibrary），无需处理 DLL_PROCESS_DETACH；
-//   - 日志：本 DLL 目录下 bc7_rdo_hook.log，追加写，简单 FILE* + 单锁防并发。
+//   - 日志：本 DLL 目录下 bc7_rdo_hook.log，整行 FILE_APPEND_DATA 追加写。
 
 #include <windows.h>
 #include <stdint.h>
@@ -32,6 +32,8 @@
 #include "bc7elib.h"
 #include "rdo_common.h"
 #include "oodle_hook.h"
+#include "rgbm_hook_runtime.h"
+#include "rgbm_hook_bootstrap.h"
 
 namespace
 {
@@ -51,15 +53,29 @@ void hook_log(const char* fmt, ...)
     std::wstring log_path =
         rdo::module_directory((LPCVOID)&hook_log) + L"\\bc7_rdo_hook.log";
 
-    FILE* f = _wfopen(log_path.c_str(), L"a");
-    if (!f)
-        return;
     va_list args;
     va_start(args, fmt);
-    vfprintf(f, fmt, args);
+    const int length = _vscprintf(fmt, args);
     va_end(args);
-    fputc('\n', f);
-    fclose(f);
+    if (length < 0) return;
+    char prefix[80];
+    const int prefix_length = sprintf_s(prefix, "pid=%lu tid=%lu ",
+                                       GetCurrentProcessId(), GetCurrentThreadId());
+    std::string line(prefix, prefix_length);
+    line.resize(static_cast<size_t>(prefix_length) + length + 1);
+    va_start(args, fmt);
+    vsnprintf(&line[prefix_length], static_cast<size_t>(length) + 1, fmt, args);
+    va_end(args);
+    line.back() = '\n';
+    // CRT append may seek to EOF before writing, racing other Worker processes.
+    // Append-only access and one WriteFile submit the complete record at EOF.
+    HANDLE file = CreateFileW(log_path.c_str(), FILE_APPEND_DATA,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+        OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return;
+    DWORD written = 0;
+    WriteFile(file, line.data(), static_cast<DWORD>(line.size()), &written, nullptr);
+    CloseHandle(file);
 }
 
 // ---------------------------------------------------------------------------
@@ -74,260 +90,6 @@ typedef void (*pfn_compress_blocks)(uint32_t, uint64_t*, const uint32_t*,
 volatile pfn_compress_blocks g_real = nullptr;
 
 // ---------------------------------------------------------------------------
-// Unity RGBM 上下文（仅 Unity 2022.3.62f1，默认关闭）
-// ---------------------------------------------------------------------------
-//
-// Unity 的 BC7 压缩实际在 Job Worker 中执行，bc7elib_compress_blocks 的参数
-// 本身不携带 TextureUsageMode。该版本的 TextureImporting 模块在压缩前调用
-// ConvertImageToRGBM(ImageReference&)，随后将同一 ImageReference::pixels
-// （布局 +0x10）传入 BC7 JobData。这里在转换点标记像素缓冲区，在 BC7 Job
-// 生命周期内激活标记，并在 lambda 中恢复 thread_local 上下文，从而让最终
-// BC7 hook 可以按 RGBM 关闭 RDO。三个内联 detour 都有固定版本的 12-byte
-// 指纹，任一不匹配即不安装。
-
-typedef void (*pfn_convert_image_to_rgbm)(void* image_reference);
-typedef void (*pfn_compress_single_image_texture)(
-    void* image_reference, uint32_t texture_format, uint32_t texture_usage_mode,
-    int quality, bool flag0, bool flag1, bool flag2, const uint8_t* flag_out,
-    const void* texture);
-typedef void* (*pfn_convert_image_for_compression)(void* source_image_reference,
-                                                    void* temporary_image,
-                                                    uint32_t graphics_format,
-                                                    uint32_t texture_format);
-typedef void (*pfn_bc7_threaded_process)(uint32_t format, void* job_data,
-                                         void* job_function);
-typedef void (*pfn_bc7_job_lambda)(uint32_t worker_index, void* job_data,
-                                   uint32_t begin, uint32_t end);
-
-volatile pfn_convert_image_to_rgbm g_real_convert_image_to_rgbm = nullptr;
-volatile pfn_compress_single_image_texture g_real_compress_single_image_texture = nullptr;
-volatile pfn_convert_image_for_compression g_real_convert_image_for_compression = nullptr;
-volatile pfn_bc7_threaded_process g_real_bc7_threaded_process = nullptr;
-volatile pfn_bc7_job_lambda g_real_bc7_job_lambda = nullptr;
-
-std::mutex g_rgbm_sources_mutex;
-std::vector<void*> g_rgbm_sources;
-std::vector<void*> g_active_rgbm_sources;
-std::atomic<uint32_t> g_rgbm_convert_count{ 0 };
-std::atomic<uint32_t> g_rgbm_copy_count{ 0 };
-std::atomic<uint32_t> g_rgbm_process_count{ 0 };
-std::atomic<uint32_t> g_rgbm_job_count{ 0 };
-thread_local uint32_t g_rgbm_context_depth = 0;
-thread_local uint32_t g_rgbm_compress_single_depth = 0;
-
-constexpr uintptr_t kUnityConvertImageToRgbmRva = 0x1EDFED0;
-constexpr uintptr_t kUnityCompressSingleImageTextureRva = 0x1EDC1A0;
-constexpr uintptr_t kUnityConvertImageForCompressionRva = 0x1EDFBF0;
-constexpr uintptr_t kUnityBc7ThreadedProcessRva = 0x1ED6540;
-constexpr uintptr_t kUnityBc7JobLambdaRva = 0x1ED9710;
-constexpr size_t kImageReferencePixelsOffset = 0x10;
-constexpr size_t kBc7JobDataSourcePixelsOffset = 0x08;
-
-bool is_rgbm_source(void* pixels)
-{
-    if (!pixels)
-        return false;
-    std::lock_guard<std::mutex> lock(g_rgbm_sources_mutex);
-    for (void* marked : g_active_rgbm_sources)
-        if (marked == pixels)
-            return true;
-    return false;
-}
-
-bool is_pending_rgbm_source(void* pixels)
-{
-    if (!pixels)
-        return false;
-    std::lock_guard<std::mutex> lock(g_rgbm_sources_mutex);
-    for (void* marked : g_rgbm_sources)
-        if (marked == pixels)
-            return true;
-    return false;
-}
-
-void mark_rgbm_source(void* pixels)
-{
-    if (!pixels)
-        return;
-    std::lock_guard<std::mutex> lock(g_rgbm_sources_mutex);
-    for (void* marked : g_rgbm_sources)
-        if (marked == pixels)
-            return;
-
-    // 仅用于活跃导入批次的关联；上限避免长时间编辑会话无限积累。
-    constexpr size_t kMaxRememberedSources = 4096;
-    if (g_rgbm_sources.size() == kMaxRememberedSources)
-        g_rgbm_sources.erase(g_rgbm_sources.begin());
-    g_rgbm_sources.push_back(pixels);
-}
-
-bool activate_rgbm_source(void* pixels)
-{
-    if (!pixels)
-        return false;
-    std::lock_guard<std::mutex> lock(g_rgbm_sources_mutex);
-    for (auto it = g_rgbm_sources.begin(); it != g_rgbm_sources.end(); ++it)
-    {
-        if (*it == pixels)
-        {
-            g_rgbm_sources.erase(it);
-            g_active_rgbm_sources.push_back(pixels);
-            return true;
-        }
-    }
-    return false;
-}
-
-void deactivate_rgbm_source(void* pixels)
-{
-    std::lock_guard<std::mutex> lock(g_rgbm_sources_mutex);
-    for (auto it = g_active_rgbm_sources.begin(); it != g_active_rgbm_sources.end(); ++it)
-    {
-        if (*it == pixels)
-        {
-            g_active_rgbm_sources.erase(it);
-            return;
-        }
-    }
-}
-
-bool is_rgbm_usage_mode(uint32_t usage_mode)
-{
-    // Unity 2022.3.62f1 TextureUtil::IsRGBMUsageMode 的同一判定：枚举
-    // BakedLightmapRGBM（以及另外两个 RGBM usage）对应 bit 2/5/9。
-    return usage_mode <= 9 && ((0x224u >> usage_mode) & 1u) != 0;
-}
-
-extern "C" void unity_compress_single_image_texture_hook(
-    void* image_reference, uint32_t texture_format, uint32_t texture_usage_mode,
-    int quality, bool flag0, bool flag1, bool flag2, const uint8_t* flag_out,
-    const void* texture)
-{
-    const bool is_rgbm = is_rgbm_usage_mode(texture_usage_mode);
-    if (is_rgbm)
-    {
-        ++g_rgbm_compress_single_depth;
-        hook_log("RGBMCTX compress-single RGBM usage=%u format=%u image=0x%p",
-                 texture_usage_mode, texture_format, image_reference);
-    }
-
-    const pfn_compress_single_image_texture real = g_real_compress_single_image_texture;
-    if (real)
-        real(image_reference, texture_format, texture_usage_mode, quality,
-             flag0, flag1, flag2, flag_out, texture);
-
-    if (is_rgbm)
-        --g_rgbm_compress_single_depth;
-}
-
-extern "C" void unity_convert_image_to_rgbm_hook(void* image_reference)
-{
-    const pfn_convert_image_to_rgbm real = g_real_convert_image_to_rgbm;
-    if (real)
-        real(image_reference);
-
-    void* pixels = image_reference
-        ? *(void**)((uint8_t*)image_reference + kImageReferencePixelsOffset)
-        : nullptr;
-    mark_rgbm_source(pixels);
-
-    const uint32_t index = g_rgbm_convert_count.fetch_add(1,
-                                                            std::memory_order_relaxed);
-    if (index < 32)
-        hook_log("RGBMCTX convert index=%u image=0x%p pixels=0x%p",
-                 index, image_reference, pixels);
-}
-
-extern "C" void* unity_convert_image_for_compression_hook(
-    void* source_image_reference, void* temporary_image, uint32_t graphics_format,
-    uint32_t texture_format)
-{
-    void* source_pixels = source_image_reference
-        ? *(void**)((uint8_t*)source_image_reference + kImageReferencePixelsOffset)
-        : nullptr;
-    const bool source_is_rgbm = is_pending_rgbm_source(source_pixels);
-
-    const pfn_convert_image_for_compression real = g_real_convert_image_for_compression;
-    void* output_image_reference = real
-        ? real(source_image_reference, temporary_image, graphics_format, texture_format)
-        : source_image_reference;
-
-    void* output_pixels = output_image_reference
-        ? *(void**)((uint8_t*)output_image_reference + kImageReferencePixelsOffset)
-        : nullptr;
-    const uint32_t index = g_rgbm_copy_count.fetch_add(1,
-                                                         std::memory_order_relaxed);
-    if (index < 64)
-    {
-        hook_log("RGBMCTX compression-copy index=%u rgbm=%d source=0x%p "
-                 "output=0x%p format=%u/%u",
-                 index, source_is_rgbm ? 1 : 0, source_pixels, output_pixels,
-                 graphics_format, texture_format);
-    }
-    if (source_is_rgbm)
-        mark_rgbm_source(output_pixels);
-    return output_image_reference;
-}
-
-extern "C" void unity_bc7_threaded_process_hook(uint32_t format, void* job_data,
-                                                   void* job_function)
-{
-    void* source_pixels = job_data
-        ? *(void**)((uint8_t*)job_data + kBc7JobDataSourcePixelsOffset)
-        : nullptr;
-    // CompressSingleImageTexture 的第三个参数就是 TextureUsageMode；它包住
-    // 此 Job 的完整调度/等待周期，因而是比中间 ImageReference 指针可靠的
-    // RGBM 上下文来源。
-    const bool is_rgbm = g_rgbm_compress_single_depth != 0;
-    if (is_rgbm)
-    {
-        std::lock_guard<std::mutex> lock(g_rgbm_sources_mutex);
-        g_active_rgbm_sources.push_back(source_pixels);
-    }
-    const uint32_t index = g_rgbm_process_count.fetch_add(1,
-                                                            std::memory_order_relaxed);
-    if (index < 64)
-        hook_log("RGBMCTX bc7-process index=%u rgbm=%d format=%u job=0x%p "
-                 "source=0x%p function=0x%p",
-                 index, is_rgbm ? 1 : 0, format, job_data, source_pixels,
-                 job_function);
-
-    const pfn_bc7_threaded_process real = g_real_bc7_threaded_process;
-    if (real)
-        real(format, job_data, job_function);
-
-    // ThreadedProcessImage 在返回前已等待自己的 worker fence 完成；此时移除
-    // active 标记，避免同一内存地址日后被非 RGBM 图片复用时误命中。
-    if (is_rgbm)
-        deactivate_rgbm_source(source_pixels);
-}
-
-extern "C" void unity_bc7_job_lambda_hook(uint32_t worker_index, void* job_data,
-                                             uint32_t begin, uint32_t end)
-{
-    void* source_pixels = job_data
-        ? *(void**)((uint8_t*)job_data + kBc7JobDataSourcePixelsOffset)
-        : nullptr;
-    const bool is_rgbm = is_rgbm_source(source_pixels);
-    if (is_rgbm)
-    {
-        ++g_rgbm_context_depth;
-        const uint32_t index = g_rgbm_job_count.fetch_add(1,
-                                                            std::memory_order_relaxed);
-        if (index < 32)
-            hook_log("RGBMCTX bc7-job index=%u worker=%u job=0x%p source=0x%p "
-                     "range=[%u,%u)",
-                     index, worker_index, job_data, source_pixels, begin, end);
-    }
-
-    const pfn_bc7_job_lambda real = g_real_bc7_job_lambda;
-    if (real)
-        real(worker_index, job_data, begin, end);
-
-    if (is_rgbm)
-        --g_rgbm_context_depth;
-}
-
 // trace_bc7_callstacks 的进程内计数。只在显式开启时自增，确保默认路径
 // 完全没有额外开销；每个注入的 AssetImportWorker 独立采样。
 std::atomic<uint32_t> g_bc7_trace_count{ 0 };
@@ -455,126 +217,6 @@ uint8_t* alloc_trampoline(HMODULE mod, uintptr_t target)
 // 装钩（inline detour）
 // ---------------------------------------------------------------------------
 
-// 固定 12 字节 prologue 的最小 detour。仅用于经 PDB/反汇编确认的 Unity
-// 2022.3.62f1 私有函数：复制无相对寻址的原始 prologue 到跳板后，跳回 +12。
-template <size_t kPrologueSize>
-bool install_unity_inline_detour(HMODULE unity, uintptr_t rva,
-                                 const uint8_t (&expected)[kPrologueSize],
-                                 uintptr_t hook, void** original,
-                                 const char* label)
-{
-    static_assert(kPrologueSize >= 12, "absolute jump requires 12 bytes");
-    uint8_t* target = (uint8_t*)unity + rva;
-    if (memcmp(target, expected, sizeof(expected)) != 0)
-    {
-        hook_log("RGBMCTX %s: Unity signature mismatch at rva=0x%llX; not hooked",
-                 label, (unsigned long long)rva);
-        return false;
-    }
-
-    // alloc_trampoline 先写入一个跳转；随后将其起始覆写成原 prologue，+12
-    // 处写回原函数余下部分。该 prologue 已人工确认不含 RIP-relative 指令。
-    uint8_t* trampoline = alloc_trampoline(unity, (uintptr_t)target + kPrologueSize);
-    if (!trampoline)
-    {
-        hook_log("RGBMCTX %s: trampoline allocation failed", label);
-        return false;
-    }
-    memcpy(trampoline, target, kPrologueSize);
-    write_abs_jump(trampoline + kPrologueSize,
-                   (uintptr_t)target + kPrologueSize);
-
-    // 在改写入口前发布 trampoline，避免 Worker 恰好进入 hook 时原函数为空。
-    InterlockedExchangePointer((PVOID volatile*)original, trampoline);
-
-    DWORD old_protect = 0;
-    if (!VirtualProtect(target, kPrologueSize, PAGE_EXECUTE_READWRITE, &old_protect))
-    {
-        InterlockedExchangePointer((PVOID volatile*)original, nullptr);
-        hook_log("RGBMCTX %s: VirtualProtect failed error=%lu", label,
-                 (unsigned long)GetLastError());
-        return false;
-    }
-    write_abs_jump(target, hook);
-    DWORD ignored = 0;
-    VirtualProtect(target, kPrologueSize, old_protect, &ignored);
-    FlushInstructionCache(GetCurrentProcess(), target, kPrologueSize);
-    hook_log("RGBMCTX %s: installed rva=0x%llX target=0x%p trampoline=0x%p",
-             label, (unsigned long long)rva, target, trampoline);
-    return true;
-}
-
-void install_unity_rgbm_context_hooks_impl()
-{
-    const rdo::rdo_config cfg = rdo::load_config(
-        rdo::config_path_in_module_dir((LPCVOID)&install_unity_rgbm_context_hooks_impl));
-    if (!cfg.unity_rgbm_context_hooks)
-        return;
-
-    HMODULE unity = GetModuleHandleW(nullptr);
-    if (!unity)
-    {
-        hook_log("RGBMCTX: Unity main module unavailable; not hooked");
-        return;
-    }
-
-    // Unity.exe 2022.3.62f1:
-    // ConvertImageToRGBM: push rbx; sub rsp,70h; cmp [rcx],34h; mov rbx,rcx
-    static const uint8_t kConvertSignature[12] = {
-        0x40, 0x53, 0x48, 0x83, 0xEC, 0x70,
-        0x83, 0x39, 0x34, 0x48, 0x8B, 0xD9
-    };
-    // CompressSingleImageTexture: save rbx/rsi/rdi (its r8d is TextureUsageMode)
-    static const uint8_t kCompressSingleSignature[15] = {
-        0x48, 0x89, 0x5C, 0x24, 0x08,
-        0x48, 0x89, 0x74, 0x24, 0x10,
-        0x48, 0x89, 0x7C, 0x24, 0x18
-    };
-    // ConvertImageForCompressionIfNeeded: save rbx/rbp/rsi, push rdi
-    static const uint8_t kCompressionCopySignature[15] = {
-        0x48, 0x89, 0x5C, 0x24, 0x08,
-        0x48, 0x89, 0x6C, 0x24, 0x10,
-        0x48, 0x89, 0x74, 0x24, 0x18
-    };
-    // BC7 job lambda: save rbx; push rbp/rsi/rdi/r12/r13
-    static const uint8_t kLambdaSignature[12] = {
-        0x48, 0x89, 0x5C, 0x24, 0x08, 0x55,
-        0x56, 0x57, 0x41, 0x54, 0x41, 0x55
-    };
-    // ThreadedProcessImage<PerformBC7TextureCompression::JobData,8>
-    static const uint8_t kThreadedProcessSignature[12] = {
-        0x4C, 0x8B, 0xDC, 0x48, 0x81, 0xEC,
-        0x58, 0x01, 0x00, 0x00, 0x85, 0xC9
-    };
-
-    const bool compress_single_ok = install_unity_inline_detour(
-        unity, kUnityCompressSingleImageTextureRva, kCompressSingleSignature,
-        (uintptr_t)&unity_compress_single_image_texture_hook,
-        (void**)&g_real_compress_single_image_texture,
-        "CompressSingleImageTexture");
-    const bool process_ok = install_unity_inline_detour(
-        unity, kUnityBc7ThreadedProcessRva, kThreadedProcessSignature,
-        (uintptr_t)&unity_bc7_threaded_process_hook,
-        (void**)&g_real_bc7_threaded_process,
-        "ThreadedProcessImage<BC7 JobData>");
-    const bool lambda_ok = install_unity_inline_detour(
-        unity, kUnityBc7JobLambdaRva, kLambdaSignature,
-        (uintptr_t)&unity_bc7_job_lambda_hook,
-        (void**)&g_real_bc7_job_lambda, "PerformBC7TextureCompression lambda");
-
-    hook_log("RGBMCTX: setup complete compressSingle=%d process=%d lambda=%d "
-             "rgbm_rdo=%d",
-             compress_single_ok ? 1 : 0, process_ok ? 1 : 0,
-             lambda_ok ? 1 : 0, cfg.rgbm_rdo ? 1 : 0);
-}
-
-std::once_flag g_rgbm_context_hook_once;
-
-void install_unity_rgbm_context_hooks()
-{
-    std::call_once(g_rgbm_context_hook_once, install_unity_rgbm_context_hooks_impl);
-}
-
 extern "C" void bc7elib_compress_blocks_hook(
     uint32_t num_blocks, uint64_t* pBlocks, const uint32_t* pPixelsRGBA,
     const bc7e_compress_block_params* pComp_params);
@@ -697,10 +339,19 @@ extern "C" void bc7elib_compress_blocks_hook(
 
     const pfn_compress_blocks real = g_real;
 
-    // RGBM context comes from Unity's TextureUsageMode and is restored on the
-    // BC7 worker thread. It selects ERT's RGB*M metric below; Oodle always
-    // receives RGBM directly because it owns its own RDO metric.
-    const bool is_rgbm = g_rgbm_context_depth != 0;
+    const auto decision = rgbm::runtime::encoding_decision(
+        cfg.unity_rgbm_context_hooks, cfg.oodle_lambda, cfg.rgbm_oodle_lambda);
+    const bool is_rgbm = decision.rgbm;
+    if (decision.native_only)
+    {
+        static std::once_flag unknown_once;
+        std::call_once(unknown_once, []() {
+            hook_log("RGBMCTX: classification unavailable/Unknown; using Unity native BC7");
+        });
+        if (real) real(num_blocks, pBlocks, pPixelsRGBA, pComp_params);
+        else memset(pBlocks, 0, (size_t)num_blocks * 16u);
+        return;
+    }
 
     if (cfg.use_oodle)
     {
@@ -708,8 +359,7 @@ extern "C" void bc7elib_compress_blocks_hook(
         // 选中的 lambda=0 是该类纹理的 Unity 原生 BC7 快路径：不加载/调用
         // Oodle，也不接 ERT 后处理。因此 oodle_lambda=0 仅影响普通 RGBA，
         // 而 rgbm_oodle_lambda=0 仅影响已识别的 RGBM Job。
-        const int l = (is_rgbm && cfg.rgbm_oodle_lambda >= 0) ?
-            cfg.rgbm_oodle_lambda : cfg.oodle_lambda;
+        const int l = decision.oodle_lambda;
         if (l == 0)
         {
             if (real)
@@ -761,9 +411,12 @@ extern "C" void bc7elib_compress_blocks_hook(
     //  这会让 Unity 的 ConsistencyChecker 报 inconsistent result）
     if (cfg.debug)
         hook_log("RDO called (bc7enc_rdo) rgbm=%d lambda=%f num_blocks=%u "
-                 "pBlocks=0x%p", use_rgbm_metric ? 1 : 0,
+                 "pBlocks=0x%p context_rgbm=%d rdo_enabled=%d smooth_scale=%f max_rms_ratio=%f", use_rgbm_metric ? 1 : 0,
                  (double)(use_rgbm_metric ? cfg.rgbm_lambda : cfg.lambda),
-                 num_blocks, (void*)pBlocks);
+                 num_blocks, (void*)pBlocks, is_rgbm ? 1 : 0,
+                 cfg.lambda > 0 && (use_rgbm_metric ? cfg.rgbm_lambda : cfg.lambda) > 0 ? 1 : 0,
+                 (double)(use_rgbm_metric ? cfg.rgbm_smooth_scale : cfg.smooth_scale),
+                 (double)(use_rgbm_metric ? cfg.rgbm_max_rms_increase_ratio : cfg.max_rms_increase_ratio));
 }
 
 // ---------------------------------------------------------------------------
@@ -772,6 +425,17 @@ extern "C" void bc7elib_compress_blocks_hook(
 
 DWORD WINAPI poll_for_module(LPVOID /*lpParam*/)
 {
+    // Initialize semantics before BC7 is first loaded/called. Workers read only
+    // their own exe's cache, never a parent-provided absolute address or hash.
+    const auto cfg = rdo::load_config(rdo::config_path_in_module_dir((LPCVOID)&poll_for_module));
+    std::string error;
+    auto cache = cfg.unity_rgbm_context_hooks ? rgbm::runtime::cache_from_command_line(error) : std::wstring{};
+    if (!cfg.unity_rgbm_context_hooks || !cache.empty()) {
+        const auto value = rgbm::runtime::initialize(cfg.unity_rgbm_context_hooks, cache.c_str(),
+            rdo::module_directory((LPCVOID)&poll_for_module).c_str(), error);
+        hook_log("RGBMCTX: pid=%lu state=%s reason=%s", GetCurrentProcessId(), rgbm::runtime::state_name(value), error.c_str());
+    }
+    else hook_log("RGBMCTX: pid=%lu state=Unavailable reason=%s", GetCurrentProcessId(), error.c_str());
     const DWORD kIntervalMs = 50;
     const DWORD kTimeoutMs = 10 * 60 * 1000;  // 10 分钟安全超时
     DWORD waited = 0;
@@ -781,9 +445,6 @@ DWORD WINAPI poll_for_module(LPVOID /*lpParam*/)
         if (GetModuleHandleW(L"compress_bc7e.dll"))
         {
             install_hook();
-            // RGBM 上下文 hook 依赖 Unity.exe 固定版本，且只在配置启动时
-            // 显式开启；放在 DllMain 之外避免在 loader lock 内做文件 I/O/patch。
-            install_unity_rgbm_context_hooks();
             return 0;
         }
 
@@ -805,6 +466,21 @@ DWORD WINAPI poll_for_module(LPVOID /*lpParam*/)
 // ---------------------------------------------------------------------------
 
 } // namespace
+
+extern "C" __declspec(dllexport) uint32_t __cdecl Bc7RgbmGetState()
+{
+    return static_cast<uint32_t>(rgbm::runtime::state());
+}
+
+extern "C" __declspec(dllexport) uint32_t __cdecl Bc7RgbmInitialize(const wchar_t* cache)
+{
+    const auto cfg = rdo::load_config(rdo::config_path_in_module_dir((LPCVOID)&Bc7RgbmInitialize));
+    std::string error;
+    const auto value = rgbm::runtime::initialize(cfg.unity_rgbm_context_hooks, cache,
+        rdo::module_directory((LPCVOID)&Bc7RgbmInitialize).c_str(), error);
+    hook_log("RGBMCTX: state=%s reason=%s", rgbm::runtime::state_name(value), error.c_str());
+    return static_cast<uint32_t>(value);
+}
 
 extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason,
                                LPVOID /*lpvReserved*/)
