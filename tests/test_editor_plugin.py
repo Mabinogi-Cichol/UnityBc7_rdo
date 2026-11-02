@@ -177,7 +177,7 @@ def main():
             for ln in _grep_log(log_text, r"error CS"):
                 print("  | " + ln.strip())
 
-        hook_log_path = plugin_dir / "bc7_rdo_hook.log"
+        hook_log_path = plugin_dir / "Log~" / "bc7_rdo_hook.log"
         hook_log = ""
         if hook_log_path.exists():
             hook_log = hook_log_path.read_text(encoding="utf-8", errors="replace")

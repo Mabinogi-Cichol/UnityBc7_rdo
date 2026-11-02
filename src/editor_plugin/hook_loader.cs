@@ -12,6 +12,8 @@
 //     - oo2tex_win64_2.9.16.dll / oo2texrt_win64_2.9.16.dll
 //                           Oodle Texture 编码器运行库（可选，encoder=oodle 时使用）
 //     - bc7_rdo_config.txt  RDO 配置（同目录热更新；encoder= 可切换 bc7enc_rdo / oodle）
+//   运行期产物落在 <插件目录>\Log~\bc7_rdo_hook.log：`~` 结尾目录被 Unity
+//   整体忽略，不会被当成工程资源导入，也不生成 .meta。
 //   重新打开 / 刷新工程即自动生效，无需注入器、无需管理员权限。
 //
 // 原理：
@@ -129,6 +131,18 @@ namespace Bc7Rdo
         private static IntPtr _hookModule = IntPtr.Zero;   // hook DLL 句柄（永不释放）
         private static string _pluginDir = "";             // 插件目录（DLL 所在目录）
         private static string _bindingCache = "";
+
+        // hook DLL 运行期日志：<插件目录>\Log~\bc7_rdo_hook.log（原生层写入同一路径）。
+        // Log~ 以 "~" 结尾，Unity 会整体忽略该目录：日志不会被当成 Assets 资源
+        // 导入，也不生成 .meta，因此也不必进 .gitignore 之外的资源流程。
+        public static string HookLogPath
+        {
+            get
+            {
+                if (_pluginDir.Length == 0) return "bc7_rdo_hook.log";
+                return Path.Combine(Path.Combine(_pluginDir, "Log~"), "bc7_rdo_hook.log");
+            }
+        }
         [UnmanagedFunctionPointer(CallingConvention.Cdecl, CharSet = CharSet.Unicode)]
         private delegate uint RgbmInitializeDelegate([MarshalAs(UnmanagedType.LPWStr)] string cache);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
@@ -188,7 +202,7 @@ namespace Bc7Rdo
                 }
 
                 Debug.Log("[Bc7Rdo] hook DLL 已加载: " + dllPath +
-                          "（配置/日志同目录: " + _pluginDir + "）");
+                          "（配置同目录: " + _pluginDir + "；日志: " + HookLogPath + "）");
                 var initialize = GetProcAddress(_hookModule, "Bc7RgbmInitialize");
                 if (initialize == IntPtr.Zero) throw new IOException("Old hook DLL is resident; restart the Editor with the complete updated plugin.");
                 var init = (RgbmInitializeDelegate)Marshal.GetDelegateForFunctionPointer(initialize, typeof(RgbmInitializeDelegate));
@@ -393,7 +407,7 @@ namespace Bc7Rdo
         // 轮询等待装钩：hook 日志出现 "install_hook: OK" 即返回 true
         private static bool WaitHookInstalled(int timeoutMs)
         {
-            string logPath = Path.Combine(_pluginDir, "bc7_rdo_hook.log");
+            string logPath = HookLogPath;
             int waited = 0;
             while (waited < timeoutMs)
             {
@@ -417,7 +431,7 @@ namespace Bc7Rdo
         {
             try
             {
-                string logPath = Path.Combine(_pluginDir, "bc7_rdo_hook.log");
+                string logPath = HookLogPath;
                 if (File.Exists(logPath))
                     return File.ReadAllText(logPath);
             }

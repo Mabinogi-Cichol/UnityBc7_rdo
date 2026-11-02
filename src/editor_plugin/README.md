@@ -155,9 +155,11 @@ RDO**，只需把 `bc7_rdo_config.txt` 中的 `encoder` 改为 `oodle`：
 
 ## 日志
 
-同目录 `bc7_rdo_hook.log`（装钩结果、debug=1 时的 RDO 调用记录）。
-建议把这两个文件加进 `.gitignore`（插件目录下的 `bc7_rdo_config.txt` 与
-`bc7_rdo_hook.log` 属于运行期产物，不该提交）。
+`Log~\bc7_rdo_hook.log`（相对插件目录：装钩结果、debug=1 时的 RDO 调用记录）。
+`Log~` 以 `~` 结尾，Unity 会把该目录整体忽略，日志不会被当成 Assets 资源导入，
+也不会生成 `.meta`；目录在首次写日志时由 hook DLL 自动创建。
+`bc7_rdo_config.txt` 仍在插件目录（配置要热更新，放同目录最方便），建议只把
+它加进 `.gitignore`；`Log~/` 若也想不进版本库，同理加一行即可。
 
 ## 菜单
 

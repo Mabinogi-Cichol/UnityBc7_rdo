@@ -9,7 +9,8 @@
 //     一次，后续线程直接读解析结果；
 //   - 加载/解析失败不影响本 DLL 其他功能：available() 返回 false，调用方
 //     （bc7_hook_dll.cpp）回退原 bc7e 编码；
-//   - 日志与 bc7_hook_dll.cpp 相同的模式：本 DLL 目录下 bc7_rdo_hook.log 追加写。
+//   - 日志与 bc7_hook_dll.cpp 相同的模式：本 DLL 目录下 Log~\bc7_rdo_hook.log
+//     追加写（Log~ 目录被 Unity 资源导入器忽略，不生成 .meta）。
 
 #include <windows.h>
 #include <stdint.h>
@@ -32,7 +33,7 @@ namespace
 {
 
 // ---------------------------------------------------------------------------
-// 日志（本 DLL 目录下 bc7_rdo_hook.log，追加写；与 bc7_hook_dll.cpp 的
+// 日志（本 DLL 目录下 Log~\bc7_rdo_hook.log，追加写；与 bc7_hook_dll.cpp 的
 // hook_log 完全同模式，独立实现避免跨 TU 暴露匿名命名空间符号）
 // ---------------------------------------------------------------------------
 
@@ -42,8 +43,7 @@ void oodle_log(const char* fmt, ...)
 {
     std::lock_guard<std::mutex> lock(g_oodle_log_mutex);
 
-    std::wstring log_path =
-        rdo::module_directory((LPCVOID)&oodle_log) + L"\\bc7_rdo_hook.log";
+    std::wstring log_path = rdo::log_path_in_module_dir((LPCVOID)&oodle_log);
 
     FILE* f = _wfopen(log_path.c_str(), L"a");
     if (!f)

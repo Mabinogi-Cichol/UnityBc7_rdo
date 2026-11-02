@@ -129,8 +129,9 @@ worker 注入流程（并行导入子进程）：
   原子发布；
 - **跳板优先 5 字节 patch**（与 MinHook 同思路），扫描失败回退为直接在
   导出桩写 12 字节绝对跳转（16 字节桩空间足够）；
-- **日志**：插件目录 `bc7_rdo_hook.log`（装钩成功/失败、模块地址等），
-  配置 `debug=1` 时记录每次 RDO 调用；
+- **日志**：插件目录下 `Log~\bc7_rdo_hook.log`（装钩成功/失败、模块地址等；
+  `Log~` 以 `~` 结尾，Unity 会忽略整个目录，日志不进资源流程、不生成
+  `.meta`），配置 `debug=1` 时记录每次 RDO 调用；
 - 与原 DLL 同名的配置读取逻辑、ERT 参数完全复用壳 DLL（`src/rdo_common.h`）。
 
 ## 3.5 Editor Plugin 形式（推荐：放进工程即生效，免注入器）
@@ -216,8 +217,9 @@ Unity 2022.3 默认启用**并行导入**：批量 reimport 的纹理压缩分�
 - 冒烟测试也可批处理执行（`-batchmode -quit -executeMethod
   Bc7Rdo.HookLoader.SmokeTest`），验证"加载 hook → 加载 compress_bc7e.dll
   → 装钩 → 转发 → RDO 生效"全链路，自动化测试即用此方式；
-- `bc7_rdo_hook.log` 出现在插件目录（Assets 下），建议加入工程的
-  `.gitignore`。
+- `bc7_rdo_hook.log` 出现在插件目录下的 `Log~` 子目录（Assets 内，但
+  `~` 结尾目录被 Unity 导入器整体忽略，不生成 `.meta`、不进资源库），
+  无需在 `.gitignore` 里额外处理导入问题。
 
 两种形态对比：
 
@@ -249,7 +251,8 @@ powershell -ExecutionPolicy Bypass -File tools\build.ps1
 （如 `Assets\Editor\Bc7Rdo\`），打开/刷新工程即自动生效：
 加载 hook DLL → 轮询等 `compress_bc7e.dll` → 装钩 → RDO。无需注入器、
 无需管理员。配置 `bc7_rdo_config.txt` 同目录热更新；日志
-`bc7_rdo_hook.log` 同目录（建议加 .gitignore）。卸载 = 删目录。
+`Log~\bc7_rdo_hook.log`（`Log~` 被 Unity 忽略，不生成 .meta；首次写日志时
+自动创建该目录）。卸载 = 删目录。
 
 ## 6. 测试
 

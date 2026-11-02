@@ -4,6 +4,7 @@
 // （tests/test_compat.py 要求输出逐字节一致）：
 //   - rdo::module_directory     : 由 DLL 内任意函数地址解析该 DLL 所在目录
 //   - rdo::config_path_in_module_dir : 模块目录 + \bc7_rdo_config.txt
+//   - rdo::log_path_in_module_dir    : 模块目录 + \Log~\bc7_rdo_hook.log（自动建目录）
 //   - rdo::load_config          : 解析配置文件
 //   - rdo::watched_config       : 配置热重载（缓存 + 文件时间检查）
 //   - rdo::apply_rdo            : 对 BC7 块流做 ERT RDO 后处理
@@ -54,6 +55,29 @@ inline std::wstring module_directory(LPCVOID address_in_module)
 inline std::wstring config_path_in_module_dir(LPCVOID module_fn)
 {
     return module_directory(module_fn) + L"\\bc7_rdo_config.txt";
+}
+
+// 日志子目录名。以 "~" 结尾的目录会被 Unity 资源导入器整体忽略，因此插件
+// 装进 Assets 后，运行期日志不会被当成工程资源导入，也不会生成 .meta。
+inline const wchar_t* const log_directory_name = L"Log~";
+
+// 日志路径 = module_fn 所属 DLL 所在目录 + "\Log~\bc7_rdo_hook.log"
+// 目录首次使用时自动创建（已存在时 CreateDirectoryW 返回
+// ERROR_ALREADY_EXISTS，忽略即可；并发首次调用同样安全）。
+inline std::wstring log_path_in_module_dir(LPCVOID module_fn)
+{
+    const std::wstring dir = module_directory(module_fn) + L"\\" + log_directory_name;
+    static std::mutex ensure_mutex;
+    static std::wstring ensured_dir;
+    {
+        std::lock_guard<std::mutex> lock(ensure_mutex);
+        if (ensured_dir != dir)
+        {
+            CreateDirectoryW(dir.c_str(), nullptr);
+            ensured_dir = dir;
+        }
+    }
+    return dir + L"\\bc7_rdo_hook.log";
 }
 
 // ---------------------------------------------------------------------------

@@ -41,7 +41,9 @@ namespace
 void hook_log(const char* fmt, ...);
 
 // ---------------------------------------------------------------------------
-// 日志（本 DLL 目录下 bc7_rdo_hook.log，追加写）
+// 日志（本 DLL 目录下 Log~\bc7_rdo_hook.log，追加写）
+// Log~ 以 "~" 结尾，Unity 会忽略整个目录：插件放在 Assets 下时日志不会被
+// 当作资源导入，也不生成 .meta。
 // ---------------------------------------------------------------------------
 
 std::mutex g_log_mutex;
@@ -50,8 +52,7 @@ void hook_log(const char* fmt, ...)
 {
     std::lock_guard<std::mutex> lock(g_log_mutex);
 
-    std::wstring log_path =
-        rdo::module_directory((LPCVOID)&hook_log) + L"\\bc7_rdo_hook.log";
+    std::wstring log_path = rdo::log_path_in_module_dir((LPCVOID)&hook_log);
 
     va_list args;
     va_start(args, fmt);

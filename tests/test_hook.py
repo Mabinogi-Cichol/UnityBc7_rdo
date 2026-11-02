@@ -79,7 +79,7 @@ def main():
                 sys.exit("late-module precondition failed: BC7 already loaded")
             hook = ctypes.WinDLL(str(hook_dll))
             hook.Bc7RgbmGetState.restype = ctypes.c_uint32
-            bootstrap_log = work / "bc7_rdo_hook.log"
+            bootstrap_log = work / "Log~" / "bc7_rdo_hook.log"
             deadline = time.monotonic() + 5
             bootstrap_completed = False
             while time.monotonic() < deadline:
@@ -96,8 +96,8 @@ def main():
             hooked = Bc7eDll(target_dll, "hooked")
             ctypes.WinDLL(str(hook_dll))
 
-        # 3. 校验装钩日志
-        log = work / "bc7_rdo_hook.log"
+        # 3. 校验装钩日志（log 落在 DLL 目录下的 Log~ 子目录：Unity 会忽略该目录）
+        log = work / "Log~" / "bc7_rdo_hook.log"
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             if log.exists() and "install_hook: OK" in log.read_text(encoding="utf-8", errors="replace"):

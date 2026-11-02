@@ -107,7 +107,7 @@ namespace Bc7Rdo
                 result.hook_sha256=RgbmBindingsLoader.HashFile(Path.Combine(RgbmBindingsLoader.PluginDirectory,"bc7_rdo_hook.dll"));
                 result.source_hdr_sha256=RgbmBindingsLoader.HashFile(source);
                 config=Path.Combine(RgbmBindingsLoader.PluginDirectory,"bc7_rdo_config.txt");
-                hookLog=Path.Combine(RgbmBindingsLoader.PluginDirectory,"bc7_rdo_hook.log");
+                hookLog=Path.Combine(RgbmBindingsLoader.PluginDirectory,"Log~","bc7_rdo_hook.log");
                 originalConfig=File.ReadAllBytes(config); configTime=File.GetLastWriteTimeUtc(config);
                 result.config_sha256=Hash(originalConfig);
                 result.fallback_mode=Environment.GetEnvironmentVariable("BC7_RGBM_P5_MODE")=="fallback";
